@@ -1,17 +1,15 @@
 {
   "name": "telegram-search-boost-bot",
   "version": "1.0.0",
-  "description": "Bot to improve Telegram search ranking via content SEO, partner distribution and engagement.",
-  "main": "src/index.js",
-  "type": "module",
+  "type": "commonjs",
+  "main": "src/index.cjs",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "NODE_ENV=development node src/index.js"
+    "start": "node src/index.cjs"
   },
   "dependencies": {
-    "node-telegram-bot-api": "^0.66.0",
-    "cron": "^3.1.9",
-    "dotenv": "^16.4.5",
-    "axios": "^1.7.4"
+    "dotenv": "^16.3.1",
+    "node-telegram-bot-api": "^0.61.0",
+    "axios": "^1.6.0",
+    "sharp": "^0.33.1"
   }
 }
