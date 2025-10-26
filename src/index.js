@@ -6,12 +6,12 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.TARGET_CHANNEL_ID;
 
 if (!BOT_TOKEN || !CHANNEL_ID) {
-  console.error('❌ Missing BOT_TOKEN or TARGET_CHANNEL_ID in Railway Variables');
+  console.error('❌ Missing BOT_TOKEN or TARGET_CHANNEL_ID in env');
   process.exit(1);
 }
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
-console.log('🚀 Bot started. VERIFY ADMIN rights in your channel');
+console.log('🚀 Bot running (rewrite mode). Make sure: Admin rights + Delete + Post enabled.');
 
 const FOLLOW_LINE =
   '\nחדשות ישראל IL — הצטרפו/תעקבו: ' +
@@ -20,39 +20,55 @@ const FOLLOW_LINE =
   '[אינסטגרם](https://www.instagram.com/newss_il?igsh=MXNtNjRjcWluc3pmdw==&utm_source=qr) | ' +
   '[טיקטוק](https://did.li/tiktok-IL)';
 
-const SKIP_IF_HAS_HASHTAG = true;
-const MAX_CAPTION = 1024;
+const SKIP_IF_HAS_HASHTAG = true;   // לא לשכתב אם יש #
+const MAX_CAPTION = 1024;           // מגבלת כיתוב למדיה בטלגרם
 
-function addFollowLine(text) {
+function buildFinalText({ text, author }) {
   const t = (text || '').trim();
   if (!t) return t;
+
+  // אם כבר קיים קו המעקב – לא מוסיפים שוב
   if (t.includes('חדשות ישראל IL — הצטרפו/תעקבו')) return t;
+
+  // דילוג אם יש האשטג
   if (SKIP_IF_HAS_HASHTAG && /(^|\s)#\S+/u.test(t)) return t;
-  return (t + FOLLOW_LINE).slice(0, 4096);
+
+  // הוספת קרדיט אם קיימת חתימה
+  const credit = author ? `\n— מאת: ${author}` : '';
+  // טקסט סופי
+  return (t + credit + FOLLOW_LINE).slice(0, 4096);
 }
 
 async function rewritePost(msg) {
-  if (!msg.chat || msg.chat.id.toString() !== CHANNEL_ID.toString()) return;
-  if (msg.from?.is_bot) return;
-
-  const chatId = msg.chat.id;
-  const messageId = msg.message_id;
-
-  const isPhoto = !!msg.photo;
-  const isVideo = !!msg.video;
-  const isAnim = !!msg.animation;
-  const isDoc = !!msg.document;
-  const isMedia = isPhoto || isVideo || isAnim || isDoc;
-
-  const originalText = (msg.caption || msg.text || '').trim();
-  if (!originalText) return;
-
-  const finalText = addFollowLine(originalText);
-  if (finalText === originalText) return;
-
   try {
+    // רק בערוץ היעד
+    if (!msg.chat || msg.chat.id.toString() !== CHANNEL_ID.toString()) return;
+    // לא לשכתב הודעות של הבוט עצמו
+    if (msg.from?.is_bot) return;
+
+    const chatId = msg.chat.id;
+    const messageId = msg.message_id;
+
+    const isPhoto = !!msg.photo;
+    const isVideo = !!msg.video;
+    const isAnim  = !!msg.animation;
+    const isDoc   = !!msg.document;
+    const isMedia = isPhoto || isVideo || isAnim || isDoc;
+
+    const originalText = (msg.caption || msg.text || '').trim();
+    if (!originalText) return;
+
+    // חתימת מנהל (דורש שהפעלת "חתימת מנהלים" בערוץ)
+    const authorSig = msg.author_signature || '';
+
+    const finalText = buildFinalText({ text: originalText, author: authorSig });
+    // אם לא בוצע שינוי (האשטג/כבר קיים/טקסט ריק) – יוצאים
+    if (finalText === originalText) return;
+
+    // מוחק מקור (צריך Delete messages)
     await bot.deleteMessage(chatId, messageId);
 
+    // מפרסם מחדש מטעם הבוט עם הקרדיט והקישורים
     if (!isMedia) {
       await bot.sendMessage(chatId, finalText, {
         parse_mode: 'Markdown',
@@ -82,19 +98,20 @@ async function rewritePost(msg) {
       });
     }
 
-    console.log('✅ REWROTE post with links ✔');
+    console.log('✅ Rewrote post with credit + follow links. Old ID:', messageId);
   } catch (err) {
     console.error('❌ Rewrite failed:', err?.response?.body || err.message || err);
   }
 }
 
+// מאזינים לפוסטים בערוץ
 bot.on('channel_post', rewritePost);
-bot.on('message', (m) => {
-  if (m.chat?.type === 'channel') rewritePost(m);
-});
+bot.on('message', (m) => { if (m.chat?.type === 'channel') rewritePost(m); });
 
 bot.onText(/\/status/, (msg) => {
-  bot.sendMessage(msg.chat.id, '✅ רץ — שכתוב פוסטים עם קישורים מוטמעים', {
-    parse_mode: 'Markdown'
-  });
+  bot.sendMessage(
+    msg.chat.id,
+    'רץ ✅ מצב: שכתוב פוסטים עם קרדיט למנהל + קישור מוטמע (דלג אם יש #).',
+    { parse_mode: 'Markdown' }
+  );
 });
