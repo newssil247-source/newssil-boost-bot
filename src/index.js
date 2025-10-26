@@ -1,91 +1,62 @@
-import 'dotenv/config';
-import TelegramBot from 'node-telegram-bot-api';
-import { CronJob } from 'cron';
-import { buildPostWithTags } from './seo.js';
-import { refreshFirstPost, forwardToPartners } from './scheduler.js';
-import { scanCompetitorsAndAdapt } from './competitors.js';
-import { sendDailyKPI } from './kpi.js';
-import { guardRate } from './guard.js';
-import { isOwner } from './utils.js';
-import { crossPostAll } from './socials.js';
+require('dotenv').config();
+const TelegramBot = require('node-telegram-bot-api');
 
-const {
-  BOT_TOKEN,
-  TARGET_CHANNEL_ID,
-  OWNER_TELEGRAM_ID,
-  REFRESH_EVERY_MINUTES = 180,
-  COMPETITOR_SCAN_EVERY_MINUTES = 360,
-  KPI_REPORT_HOUR = 23,
-  CRON_TZ = 'Asia/Jerusalem'
-} = process.env;
-
-if (!BOT_TOKEN || !TARGET_CHANNEL_ID) {
-  console.error('Missing BOT_TOKEN or TARGET_CHANNEL_ID in .env');
-  process.exit(1);
-}
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const CHANNEL_ID = process.env.TARGET_CHANNEL_ID;
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-// Admin commands
-bot.onText(/^\/start$/, async (msg) => {
-  if (!isOwner(msg)) return;
-  await bot.sendMessage(msg.chat.id, '✅ בוט פעיל. /status לבדיקה, /boost לריענון, /kpi לדוח.');
-});
+console.log("🚀 Bot started. Make sure the bot is ADMIN in your channel.");
 
-bot.onText(/^\/status$/, async (msg) => {
-  if (!isOwner(msg)) return;
-  await bot.sendMessage(msg.chat.id, `🟢 רץ.\nערוץ יעד: ${TARGET_CHANNEL_ID}\nריענון כל ${REFRESH_EVERY_MINUTES} דק'\nסריקת מתחרים כל ${COMPETITOR_SCAN_EVERY_MINUTES} דק'`);
-});
+const followLinks = `\nחדשות ישראל IL — הצטרפו/תעקבו: [X](https://did.li/News-x) | [פייסבוק](https://did.li/facebook-IL) | [אינסטגרם](https://www.instagram.com/newss_il?igsh=MXNtNjRjcWluc3pmdw==&utm_source=qr) | [טיקטוק](https://did.li/tiktok-IL)`;
 
-bot.onText(/^\/boost$/, async (msg) => {
-  if (!isOwner(msg)) return;
-  await guardRate();
-  const res = await refreshFirstPost(bot);
-  await bot.sendMessage(msg.chat.id, `⚡ Boost Done: ${res}`);
-});
-
-bot.onText(/^\/kpi$/, async (msg) => {
-  if (!isOwner(msg)) return;
-  await sendDailyKPI(bot);
-  await bot.sendMessage(msg.chat.id, '📈 KPI נשלח.');
-});
-
-// Any private message -> tagged and posted to channel
+// כל הודעה שנכנסת לערוץ
 bot.on('message', async (msg) => {
-  if (String(msg.chat.id) === String(TARGET_CHANNEL_ID)) return;
-  if (!msg.text) return;
+    if (!msg || msg.chat?.id?.toString() !== CHANNEL_ID.toString()) return;
 
-  try {
-    await guardRate();
-    const tagged = await buildPostWithTags(msg.text);
-    const sent = await bot.sendMessage(TARGET_CHANNEL_ID, tagged, { disable_web_page_preview: true });
-    // Cross-post to socials
-    await crossPostAll({ text: tagged, channelId: TARGET_CHANNEL_ID, messageId: sent.message_id });
-  } catch (e) {
-    console.error('message handler error', e.message);
-  }
+    let text = msg.caption || msg.text || "";
+    const msgId = msg.message_id;
+
+    // אם ההודעה של הבוט עצמו — לא לגעת
+    if (msg.from?.is_bot) return;
+
+    // נוסיף את הקישורים אם יש טקסט מעל 10 תווים
+    let updated = text;
+    if (text.length > 10) {
+        updated += followLinks;
+    }
+
+    try {
+        if (msg.photo) {
+            await bot.editMessageCaption(updated, {
+                chat_id: CHANNEL_ID,
+                message_id: msgId,
+                parse_mode: "Markdown"
+            });
+        } else if (msg.video) {
+            await bot.editMessageCaption(updated, {
+                chat_id: CHANNEL_ID,
+                message_id: msgId,
+                parse_mode: "Markdown"
+            });
+        } else if (msg.text) {
+            await bot.editMessageText(updated, {
+                chat_id: CHANNEL_ID,
+                message_id: msgId,
+                parse_mode: "Markdown",
+                disable_web_page_preview: true
+            });
+        }
+        console.log("✅ Added follow links to message:", msgId);
+    } catch (err) {
+        console.error("❌ Edit failed:", err.message);
+    }
 });
 
-// Cron jobs
-new CronJob(`*/${REFRESH_EVERY_MINUTES} * * * *`, async () => {
-  try {
-    await guardRate();
-    await refreshFirstPost(bot);
-    await forwardToPartners(bot);
-  } catch (e) { console.error('refresh cron:', e.message); }
-}, null, true, CRON_TZ);
+// פקודת בדיקה
+bot.onText(/\/status/, (msg) => {
+    bot.sendMessage(msg.chat.id, "✅ הבוט רץ ומוסיף קישורים מוטמעים לכל הודעה!", {
+        parse_mode: "Markdown"
+    });
+});
 
-new CronJob(`*/${COMPETITOR_SCAN_EVERY_MINUTES} * * * *`, async () => {
-  try {
-    await guardRate();
-    await scanCompetitorsAndAdapt(bot);
-  } catch (e) { console.error('competitor cron:', e.message); }
-}, null, true, CRON_TZ);
-
-new CronJob(`0 ${KPI_REPORT_HOUR} * * *`, async () => {
-  try {
-    await sendDailyKPI(bot);
-  } catch (e) { console.error('kpi cron:', e.message); }
-}, null, true, CRON_TZ);
-
-console.log('🚀 Bot started. Make sure the bot is ADMIN in your channel.');
