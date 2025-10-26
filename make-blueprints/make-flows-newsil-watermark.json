@@ -1,0 +1,237 @@
+{
+  "name": "NewsIL Fan-out + FFmpeg Overlay",
+  "version": 2,
+  "triggers": [
+    {
+      "id": "wh1",
+      "type": "webhook",
+      "app": "webhooks",
+      "action": "customWebhook",
+      "params": {
+        "webhookName": "newsil_bot_webhook"
+      }
+    }
+  ],
+  "modules": [
+    {
+      "id": "tg_getfile",
+      "type": "module",
+      "app": "http",
+      "action": "makeRequest",
+      "name": "Telegram getFile",
+      "params": {
+        "method": "GET",
+        "url": "https://api.telegram.org/bot{{env.TELEGRAM_BOT_TOKEN}}/getFile?file_id={{1.media.file_id}}"
+      }
+    },
+    {
+      "id": "tg_fileurl",
+      "type": "module",
+      "app": "tools",
+      "action": "composeString",
+      "name": "Build file URL",
+      "params": {
+        "value": "https://api.telegram.org/file/bot{{env.TELEGRAM_BOT_TOKEN}}/{{parseJson(2.body).result.file_path}}",
+        "resultName": "mediaUrl"
+      }
+    },
+    {
+      "id": "ff_filter",
+      "type": "filter",
+      "name": "Use FFmpeg?",
+      "condition": "{{length(env.FFMPEG_OVERLAY_ENDPOINT) > 0}}",
+      "next": [
+        "ff_call"
+      ]
+    },
+    {
+      "id": "ff_call",
+      "type": "module",
+      "app": "http",
+      "action": "makeRequest",
+      "name": "Call FFmpeg worker",
+      "params": {
+        "method": "POST",
+        "url": "{{env.FFMPEG_OVERLAY_ENDPOINT}}",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"input\":\"{{2.mediaUrl}}\",\"overlay_top_right\":\"{{env.WATERMARK_TOPRIGHT_URL}}\",\"overlay_center\":\"{{env.WATERMARK_CENTER_URL}}\",\"center_opacity\":0.3,\"position_top_right\":\"10:10\"}"
+      }
+    },
+    {
+      "id": "choose_url",
+      "type": "module",
+      "app": "tools",
+      "action": "composeString",
+      "name": "Choose processed/original",
+      "params": {
+        "value": "{{if(length(4.body) > 0 ; 'make:httpResponseBody(4)' ; 2.mediaUrl)}}",
+        "resultName": "finalMediaUrl"
+      }
+    },
+    {
+      "id": "router",
+      "type": "router",
+      "name": "Route",
+      "next": [
+        "x_filter",
+        "fb_filter",
+        "ig_filter",
+        "tt_filter"
+      ]
+    },
+    {
+      "id": "x_filter",
+      "type": "filter",
+      "name": "X?",
+      "condition": "{{1.allowOn.x}}",
+      "next": [
+        "x_post"
+      ]
+    },
+    {
+      "id": "x_post",
+      "type": "module",
+      "app": "twitter",
+      "action": "createATweet",
+      "name": "Tweet",
+      "params": {
+        "text": "{{1.text}}"
+      }
+    },
+    {
+      "id": "fb_filter",
+      "type": "filter",
+      "name": "FB?",
+      "condition": "{{1.allowOn.facebook}}",
+      "next": [
+        "fb_text",
+        "fb_media_filter"
+      ]
+    },
+    {
+      "id": "fb_text",
+      "type": "module",
+      "app": "facebookPages",
+      "action": "createAPost",
+      "name": "FB Post",
+      "params": {
+        "message": "{{1.text}}"
+      }
+    },
+    {
+      "id": "fb_media_filter",
+      "type": "filter",
+      "name": "FB media?",
+      "condition": "{{1.allowOn.facebookMedia}}",
+      "next": [
+        "fb_media"
+      ]
+    },
+    {
+      "id": "fb_media",
+      "type": "module",
+      "app": "facebookPages",
+      "action": "createAPhoto",
+      "name": "FB Photo",
+      "params": {
+        "caption": "{{1.text}}",
+        "url": "{{5.finalMediaUrl}}"
+      }
+    },
+    {
+      "id": "ig_filter",
+      "type": "filter",
+      "name": "IG?",
+      "condition": "{{1.allowOn.instagram}}",
+      "next": [
+        "ig_media"
+      ]
+    },
+    {
+      "id": "ig_media",
+      "type": "module",
+      "app": "instagramForBusiness",
+      "action": "createMedia",
+      "name": "IG Media",
+      "params": {
+        "caption": "{{1.text}}",
+        "image_url": "{{5.finalMediaUrl}}",
+        "is_carousel_item": false
+      }
+    },
+    {
+      "id": "tt_filter",
+      "type": "filter",
+      "name": "TikTok?",
+      "condition": "{{1.allowOn.tiktok}}",
+      "next": [
+        "tt_upload"
+      ]
+    },
+    {
+      "id": "tt_upload",
+      "type": "module",
+      "app": "tiktok",
+      "action": "uploadVideo",
+      "name": "TikTok Upload",
+      "params": {
+        "caption": "{{1.text}}",
+        "video_url": "{{5.finalMediaUrl}}"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": 1,
+      "to": "tg_getfile"
+    },
+    {
+      "from": "tg_getfile",
+      "to": "tg_fileurl"
+    },
+    {
+      "from": "tg_fileurl",
+      "to": "ff_filter"
+    },
+    {
+      "from": "ff_filter",
+      "to": "ff_call"
+    },
+    {
+      "from": "tg_fileurl",
+      "to": "choose_url"
+    },
+    {
+      "from": "ff_call",
+      "to": "choose_url"
+    },
+    {
+      "from": "choose_url",
+      "to": "router"
+    },
+    {
+      "from": "router",
+      "to": "x_filter"
+    },
+    {
+      "from": "router",
+      "to": "fb_filter"
+    },
+    {
+      "from": "router",
+      "to": "ig_filter"
+    },
+    {
+      "from": "router",
+      "to": "tt_filter"
+    }
+  ],
+  "envHints": {
+    "TELEGRAM_BOT_TOKEN": "Bot token to resolve files",
+    "FFMPEG_OVERLAY_ENDPOINT": "URL of your ffmpeg worker /overlay endpoint",
+    "WATERMARK_TOPRIGHT_URL": "Public PNG URL (corner)",
+    "WATERMARK_CENTER_URL": "Public PNG URL (center)"
+  }
+}

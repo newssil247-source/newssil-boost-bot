@@ -1,0 +1,13 @@
+{
+  "name": "newsil-mega-bot",
+  "version": "2.4.0",
+  "type": "module",
+  "main": "src/index.cjs",
+  "scripts": {
+    "start": "node src/index.cjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}

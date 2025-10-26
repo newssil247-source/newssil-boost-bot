@@ -1,0 +1,183 @@
+{
+  "name": "NewsIL Fan-out (Telegram → X/Facebook/Instagram/TikTok)",
+  "version": 1,
+  "triggers": [
+    {
+      "id": "wh1",
+      "type": "webhook",
+      "app": "webhooks",
+      "action": "customWebhook",
+      "params": {
+        "webhookName": "newsil_bot_webhook"
+      }
+    }
+  ],
+  "modules": [
+    {
+      "id": "tg_getfile",
+      "type": "module",
+      "app": "http",
+      "action": "makeRequest",
+      "name": "Telegram getFile",
+      "params": {
+        "method": "GET",
+        "url": "https://api.telegram.org/bot{{env.TELEGRAM_BOT_TOKEN}}/getFile?file_id={{1.media.file_id}}"
+      }
+    },
+    {
+      "id": "tg_fileurl",
+      "type": "module",
+      "app": "tools",
+      "action": "composeString",
+      "name": "Build file URL",
+      "params": {
+        "value": "https://api.telegram.org/file/bot{{env.TELEGRAM_BOT_TOKEN}}/{{parseJson(2.body).result.file_path}}",
+        "resultName": "mediaUrl"
+      }
+    },
+    {
+      "id": "router",
+      "type": "router",
+      "name": "Route",
+      "next": [
+        "x_filter",
+        "fb_filter",
+        "ig_filter",
+        "tt_filter"
+      ]
+    },
+    {
+      "id": "x_filter",
+      "type": "filter",
+      "name": "X?",
+      "condition": "{{1.allowOn.x}}",
+      "next": [
+        "x_post"
+      ]
+    },
+    {
+      "id": "x_post",
+      "type": "module",
+      "app": "twitter",
+      "action": "createATweet",
+      "name": "Tweet",
+      "params": {
+        "text": "{{1.text}}"
+      }
+    },
+    {
+      "id": "fb_filter",
+      "type": "filter",
+      "name": "FB?",
+      "condition": "{{1.allowOn.facebook}}",
+      "next": [
+        "fb_text",
+        "fb_media_filter"
+      ]
+    },
+    {
+      "id": "fb_text",
+      "type": "module",
+      "app": "facebookPages",
+      "action": "createAPost",
+      "name": "FB Post",
+      "params": {
+        "message": "{{1.text}}"
+      }
+    },
+    {
+      "id": "fb_media_filter",
+      "type": "filter",
+      "name": "FB media?",
+      "condition": "{{1.allowOn.facebookMedia}}",
+      "next": [
+        "fb_media"
+      ]
+    },
+    {
+      "id": "fb_media",
+      "type": "module",
+      "app": "facebookPages",
+      "action": "createAPhoto",
+      "name": "FB Photo",
+      "params": {
+        "caption": "{{1.text}}",
+        "url": "{{2.mediaUrl}}"
+      }
+    },
+    {
+      "id": "ig_filter",
+      "type": "filter",
+      "name": "IG?",
+      "condition": "{{1.allowOn.instagram}}",
+      "next": [
+        "ig_media"
+      ]
+    },
+    {
+      "id": "ig_media",
+      "type": "module",
+      "app": "instagramForBusiness",
+      "action": "createMedia",
+      "name": "IG Media",
+      "params": {
+        "caption": "{{1.text}}",
+        "image_url": "{{2.mediaUrl}}",
+        "is_carousel_item": false
+      }
+    },
+    {
+      "id": "tt_filter",
+      "type": "filter",
+      "name": "TikTok?",
+      "condition": "{{1.allowOn.tiktok}}",
+      "next": [
+        "tt_upload"
+      ]
+    },
+    {
+      "id": "tt_upload",
+      "type": "module",
+      "app": "tiktok",
+      "action": "uploadVideo",
+      "name": "TikTok Upload",
+      "params": {
+        "caption": "{{1.text}}",
+        "video_url": "{{2.mediaUrl}}"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "from": 1,
+      "to": "tg_getfile"
+    },
+    {
+      "from": "tg_getfile",
+      "to": "tg_fileurl"
+    },
+    {
+      "from": "tg_fileurl",
+      "to": "router"
+    },
+    {
+      "from": "router",
+      "to": "x_filter"
+    },
+    {
+      "from": "router",
+      "to": "fb_filter"
+    },
+    {
+      "from": "router",
+      "to": "ig_filter"
+    },
+    {
+      "from": "router",
+      "to": "tt_filter"
+    }
+  ],
+  "envHints": {
+    "TELEGRAM_BOT_TOKEN": "Bot token to resolve files"
+  }
+}
