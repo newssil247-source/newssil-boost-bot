@@ -1,240 +1,237 @@
-// NewsSIL Boost Bot – v4.2b-clean
-// Requires: Node 18+, Telegraf 4.x
+// NewsSIL Boost Bot – v4.2b (media WM + footer + rate-limit)
 import 'dotenv/config.js';
 import { Telegraf } from 'telegraf';
-import * as fsp from 'fs/promises';
-import fs from 'fs';
+import fs from 'fs/promises';
+import fssync from 'fs';
 import path from 'path';
+import axios from 'axios';
+import { spawn } from 'child_process';
 
-// ---------- ENV guard ----------
-const need = (k) => {
-  const v = process.env[k];
-  if (!v || String(v).trim() === '') throw new Error(`Missing env ${k}`);
-  return v;
-};
+const need = (k) => { if (!process.env[k]) throw new Error(`Missing env ${k}`); return process.env[k]; };
 
-// Required
 const BOT_TOKEN         = need('BOT_TOKEN');
-const TARGET_CHANNEL_ID = need('TARGET_CHANNEL_ID');   // לדוגמה: -1002111890470
-const ADMIN_ID          = need('ADMIN_ID');            // המשתמש שלך לבדיקה/פיקוד
+const SOURCE_CHANNEL_ID = need('SOURCE_CHANNEL_ID');
+const TARGET_CHANNEL_ID = need('TARGET_CHANNEL_ID');
+const ADMIN_ID          = need('ADMIN_ID');
 
-// Optional
-const SOURCE_CHANNEL_ID = process.env.SOURCE_CHANNEL_ID || ''; // אם רץ כ-channel post handler, אפשר להשאיר ריק
-const MAKE_WEBHOOK_URL  = process.env.MAKE_WEBHOOK_URL || '';
-const FOOTER_ONELINE    = (process.env.FOOTER_ONELINE || 'חדשות ישראל IL — הצטרפו/תעקבו: X | פייסבוק | אינסטגרם | טיקטוק | וואצאפ').trim();
+const LINK_X  = need('LINK_X');
+const LINK_FB = need('LINK_FB');
+const LINK_WA = need('LINK_WA');
+const LINK_IG = need('LINK_IG');
+const LINK_TT = need('LINK_TT');
 
-// Footer links (הטקסט עצמו לחיץ)
-const LINK_X  = process.env.LINK_X  || 'https://x.com/newssil?s=21&t=4KCKcrzGOVZp-_w6QjhipQ';
-const LINK_FB = process.env.LINK_FB || 'https://www.facebook.com/share/173b9ycBuP/?mibextid=wwXIfr';
-const LINK_IG = process.env.LINK_IG || 'https://www.instagram.com/newss_il?igsh=MXNtNjRjcWluc3pmdw==';
-const LINK_TT = process.env.LINK_TT || 'https://www.tiktok.com/@newss_il?_t=ZS-90sXDtL1OdD&_r=1';
-const LINK_WA = process.env.LINK_WA || 'https://whatsapp.com/channel/0029VaKyMK8ICVfrbqvQ6n0D';
+const FOOTER_ONELINE = process.env.FOOTER_ONELINE || 'חדשות ישראל IL — הצטרפו/תעקבו כעת';
+const DISABLE_WEB_PREVIEW = String(process.env.DISABLE_WEB_PREVIEW || 'true') === 'true';
 
-// Watermark controls
-const WM_POS     = (process.env.WM_POS || 'corner').toLowerCase(); // corner|topright|center
-const WM_CORNER  = process.env.WM_CORNER || 'top-right';           // top-right|top-left|bottom-right|bottom-left
-const WM_CENTER  = process.env.WM_CENTER || '0.92,0.10';           // normalized x,y (אם center)
-const SEO_ENABLE = (process.env.SEO_ENABLE || 'true').toLowerCase() === 'true';
+const WM_ENABLE    = String(process.env.WM_ENABLE || 'true') === 'true';
+const WM_IMAGE     = process.env.WM_IMAGE || 'assets/il_logo.png';
+const WM_POS       = process.env.WM_POS || 'top-right';
+const WM_MARGIN    = Number(process.env.WM_MARGIN || 20);
+const WM_WIDTH_PCT = Number(process.env.WM_WIDTH_PCT || 18);
 
-// Files
-const DATA_DIR   = 'data';
-const SEEN_FILE  = path.join(DATA_DIR, 'seen.json');
+const RETRY_MAX        = Number(process.env.RETRY_MAX || 6);
+const RETRY_BACKOFF_MS = Number(process.env.RETRY_BACKOFF_MS || 900);
 
-// ---------- helpers ----------
-async function ensureDataFile() {
-  try {
-    await fsp.mkdir(DATA_DIR, { recursive: true });
-    if (!fs.existsSync(SEEN_FILE)) {
-      await fsp.writeFile(SEEN_FILE, '[]', 'utf8');
-    } else {
-      // validate JSON
-      const raw = await fsp.readFile(SEEN_FILE, 'utf8');
-      JSON.parse(raw || '[]');
+const SEEN_FILE = 'data/seen.json';
+if (!fssync.existsSync('data')) fssync.mkdirSync('data', { recursive: true });
+if (!fssync.existsSync(SEEN_FILE)) fssync.writeFileSync(SEEN_FILE, '[]');
+
+const bot = new Telegraf(BOT_TOKEN);
+
+// ---------- utils ----------
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+async function callWithRetry(fn, label='tg') {
+  let attempt = 0;
+  while (true) {
+    try { return await fn(); }
+    catch (e) {
+      const code = e?.response?.error_code || e?.code;
+      const retryAfter = e?.response?.parameters?.retry_after;
+      if (code === 429 && attempt < RETRY_MAX) {
+        const wait = Math.max((retryAfter ? (retryAfter*1000) : 0), RETRY_BACKOFF_MS * (attempt+1));
+        console.warn(`[${label}] 429; retry in ${wait}ms (attempt ${attempt+1}/${RETRY_MAX})`);
+        await sleep(wait);
+        attempt++;
+        continue;
+      }
+      throw e;
     }
-  } catch (e) {
-    // reset if corrupted
-    await fsp.writeFile(SEEN_FILE, '[]', 'utf8');
   }
+}
+
+function buildFooterHTML() {
+  // טקסט לחיץ — קישורים מוטמעים, בלי להציג URL
+  const parts = [
+    `${FOOTER_ONELINE}:`,
+    `<a href="${LINK_X}">X</a>`,
+    `<a href="${LINK_FB}">פייסבוק</a>`,
+    `<a href="${LINK_WA}">ווצאפ</a>`,
+    `<a href="${LINK_IG}">אינסטגרם</a>`,
+    `<a href="${LINK_TT}">טיקטוק</a>`
+  ];
+  return parts.join(' | ');
 }
 
 async function readSeen() {
-  const raw = await fsp.readFile(SEEN_FILE, 'utf8').catch(()=>'[]');
-  try { return JSON.parse(raw || '[]'); } catch { return []; }
+  try {
+    const raw = await fs.readFile(SEEN_FILE, 'utf8');
+    const j = JSON.parse(raw);
+    return Array.isArray(j) ? j : [];
+  } catch { return []; }
 }
 async function writeSeen(arr) {
-  await fsp.writeFile(SEEN_FILE, JSON.stringify(arr.slice(-5000)), 'utf8');
+  await fs.writeFile(SEEN_FILE, JSON.stringify(arr.slice(-3000))); // cap
 }
 
-function makeFooter() {
-  // הטקסט לחיץ: משתמשים ב-MarkdownV2 עם קישורים מוטמעים
-  const items = [
-    `[X](${LINK_X})`,
-    `[פייסבוק](${LINK_FB})`,
-    `[אינסטגרם](${LINK_IG})`,
-    `[טיקטוק](${LINK_TT})`,
-    `[וואצאפ](${LINK_WA})`,
-  ];
-  // שכבת "SEO" סמויה: מפריד בלתי נראה שלא יוצג
-  const INV = SEO_ENABLE ? '\u2063' : ''; // invisible separator
-  return `\n${INV}${FOOTER_ONELINE.replaceAll('|','|')}\n${items.join(' | ')}`;
+function addFooterToText(text) {
+  const footer = buildFooterHTML();
+  const clean = (text || '').trim();
+  return clean ? `${clean}\n\n${footer}` : footer;
 }
 
-function escapeMdV2(s='') {
-  // בריחה בסיסית ל-MarkdownV2
-  return String(s).replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
+async function downloadFileById(tg, fileId, outPath) {
+  const link = await tg.getFileLink(fileId);
+  const res = await axios.get(link.href, { responseType: 'arraybuffer' });
+  await fs.writeFile(outPath, res.data);
+  return outPath;
 }
 
-async function postToMake(payload) {
-  if (!MAKE_WEBHOOK_URL) return;
-  const body = JSON.stringify(payload);
-  for (let i=0;i<4;i++){
-    const res = await fetch(MAKE_WEBHOOK_URL, {
-      method: 'POST',
-      headers: {'content-type':'application/json'},
-      body
-    }).catch(()=>null);
-    const ok = !!(res && res.ok);
-    if (ok) return;
-    // backoff
-    await new Promise(r=>setTimeout(r, 1000*(i+1)));
+// ---------- watermark (image via sharp, video via ffmpeg) ----------
+async function watermarkImage(inputPath, outputPath) {
+  const sharp = (await import('sharp')).default;
+  const img = sharp(inputPath);
+  const meta = await img.metadata();
+  const wmWidth = Math.round((meta.width || 1000) * (WM_WIDTH_PCT/100));
+  const wm = await sharp(WM_IMAGE).resize({ width: wmWidth }).png().toBuffer();
+
+  let left = WM_MARGIN, top = WM_MARGIN;
+  switch (WM_POS) {
+    case 'top-right':     left = (meta.width - wmWidth - WM_MARGIN); top = WM_MARGIN; break;
+    case 'bottom-right':  left = (meta.width - wmWidth - WM_MARGIN); top = (meta.height - Math.round(wmWidth*0.6) - WM_MARGIN); break;
+    case 'bottom-left':   left = WM_MARGIN; top = (meta.height - Math.round(wmWidth*0.6) - WM_MARGIN); break;
+    // default top-left
+  }
+
+  await img
+    .composite([{ input: wm, left: Math.max(0,left), top: Math.max(0,top) }])
+    .jpeg({ quality: 90 })
+    .toFile(outputPath);
+  return outputPath;
+}
+
+async function watermarkVideo(inputPath, outputPath) {
+  const ff = spawn('ffmpeg', [
+    '-y',
+    '-i', inputPath,
+    '-i', WM_IMAGE,
+    '-filter_complex',
+    // scale watermark relative to video width, overlay position by WM_POS
+    `[1][0]scale2ref=w=iw*${WM_WIDTH_PCT/100}:h=ow/mdar[wm][vid];` +
+    `[vid][wm]overlay=${posExpr(WM_POS, WM_MARGIN)}`,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+    '-c:a', 'copy',
+    outputPath
+  ]);
+
+  await new Promise((res, rej) => {
+    ff.on('error', rej);
+    ff.stderr.on('data', d => process.stdout.write(d.toString()));
+    ff.on('close', (code) => code === 0 ? res() : rej(new Error(`ffmpeg exit ${code}`)));
+  });
+  return outputPath;
+}
+
+function posExpr(pos, m) {
+  const xRight = `W-w-${m}`;
+  const xLeft  = `${m}`;
+  const yTop   = `${m}`;
+  const yBottom= `H-h-${m}`;
+  switch (pos) {
+    case 'top-right':    return `${xRight}:${yTop}`;
+    case 'bottom-right': return `${xRight}:${yBottom}`;
+    case 'bottom-left':  return `${xLeft}:${yBottom}`;
+    default:             return `${xLeft}:${yTop}`; // top-left
   }
 }
 
-// סימולציית הטבעת ווטרמרק: כאן רק תיאור — בפועל הווטרמרק מופעל בצד ה-Make/FFmpeg/Sharp אם מחוברים.
-// אם תרצה עיבוד ישיר בשרת, מחליפים כאן למימוש sharp/ffmpeg.
-function buildCaptionWithWM(caption) {
-  const wmNote = ''; // לא מציגים טקסט גלוי — הווטרמרק על המדיה עצמה
-  return `${caption || ''}${wmNote}${makeFooter()}`;
-}
+// ---------- handlers ----------
+bot.on('channel_post', async (ctx) => {
+  const post = ctx.channelPost;
+  if (!post?.chat?.id) return;
 
-// ---------- Bot ----------
-const bot = new Telegraf(BOT_TOKEN, { handlerTimeout: 90_000 });
+  // מסננים רק מהמקור שהגדרת
+  if (String(post.chat.id) !== String(SOURCE_CHANNEL_ID)) return;
 
-// פקודת בדיקה
-bot.command('ping', async (ctx) => {
-  if (String(ctx.from?.id) !== String(ADMIN_ID)) return;
+  // אנטי-כפילות
+  const seen = await readSeen();
+  const key = `${post.chat.id}:${post.message_id}`;
+  if (seen.includes(key)) return;
+  seen.push(key);
+  await writeSeen(seen);
+
+  // טקסט לטיפול (עם פוטר)
+  const caption = addFooterToText(post.caption || post.text || '');
+
+  // --- יש מדיה? מטפלים במדבקה ---
+  try {
+    if (WM_ENABLE && (post.photo?.length || post.video)) {
+      // מוחקים את ההודעה המקורית בערוץ היעד אם קיימת עריכה – כאן נפרסם חדש בלבד
+      // נוריד, נצרוב WM, ונעלה
+      if (post.photo?.length) {
+        const fileId = post.photo[post.photo.length - 1].file_id;
+        const tmpIn  = `tmp/${key}.jpg`;
+        const tmpOut = `tmp/${key}.wm.jpg`;
+        await fs.mkdir('tmp', { recursive: true });
+        await downloadFileById(ctx.telegram, fileId, tmpIn);
+        await watermarkImage(tmpIn, tmpOut);
+
+        await callWithRetry(() => ctx.telegram.sendPhoto(
+          TARGET_CHANNEL_ID,
+          { source: tmpOut },
+          { caption, parse_mode: 'HTML', disable_web_page_preview: DISABLE_WEB_PREVIEW }
+        ), 'sendPhoto');
+
+        await fs.rm(tmpIn, { force: true }); await fs.rm(tmpOut, { force: true });
+      } else if (post.video) {
+        const fileId = post.video.file_id;
+        const tmpIn  = `tmp/${key}.mp4`;
+        const tmpOut = `tmp/${key}.wm.mp4`;
+        await fs.mkdir('tmp', { recursive: true });
+        await downloadFileById(ctx.telegram, fileId, tmpIn);
+        await watermarkVideo(tmpIn, tmpOut);
+
+        await callWithRetry(() => ctx.telegram.sendVideo(
+          TARGET_CHANNEL_ID,
+          { source: tmpOut },
+          { caption, parse_mode: 'HTML', disable_web_page_preview: DISABLE_WEB_PREVIEW }
+        ), 'sendVideo');
+
+        await fs.rm(tmpIn, { force: true }); await fs.rm(tmpOut, { force: true });
+      }
+      return;
+    }
+
+    // --- טקסט בלבד או WM כבוי: נשלח/נערוך בלי צריבה ---
+    await callWithRetry(() => ctx.telegram.sendMessage(
+      TARGET_CHANNEL_ID,
+      caption,
+      { parse_mode: 'HTML', disable_web_page_preview: DISABLE_WEB_PREVIEW }
+    ), 'sendMessage');
+
+  } catch (e) {
+    console.error('handler error:', e?.response || e);
+  }
+});
+
+// פקודות – רק בפרטי מול ADMIN
+bot.command(['ping','status'], async (ctx) => {
+  if (String(ctx.chat?.id) !== String(ADMIN_ID)) return;
   await ctx.reply('pong');
 });
 
-// מאזין לפוסטים של ערוץ
-bot.on('channel_post', async (ctx) => {
-  try {
-    const msg = ctx.channelPost;
-    if (!msg) return;
+bot.launch().then(() => console.log('newsSIL boost bot started')).catch(e => console.error('launch failed', e));
 
-    // מקור/יעד: אם נתת SOURCE_CHANNEL_ID — נוודא שזה ממנו
-    if (SOURCE_CHANNEL_ID && String(msg.chat?.id) !== String(SOURCE_CHANNEL_ID)) return;
-
-    await ensureDataFile();
-    const seen = await readSeen();
-    const key = `${msg.chat.id}:${msg.message_id}`;
-    if (seen.includes(key)) return;
-    seen.push(key);
-    await writeSeen(seen);
-
-    // שלח ל-Make (לוג ותכלס אוטומציות חיצוניות)
-    await postToMake({
-      event: 'channel_post',
-      chat_id: msg.chat.id,
-      message_id: msg.message_id,
-      has_media: !!(msg.photo || msg.video || msg.animation || msg.document),
-      text: msg.text || msg.caption || '',
-      ts: Date.now()
-    });
-
-    // לוגיקת מדיה מול טקסט
-    const baseText = msg.text || msg.caption || '';
-    const captionWithFooter = buildCaptionWithWM(escapeMdV2(baseText));
-
-    // 1) אם יש תמונה
-    if (msg.photo && msg.photo.length) {
-      // מוחק ומעלה מחדש עם כיתוב+פוטר
-      try { await ctx.telegram.deleteMessage(msg.chat.id, msg.message_id); } catch {}
-      const fileId = msg.photo[msg.photo.length - 1].file_id;
-      await ctx.telegram.sendPhoto(
-        TARGET_CHANNEL_ID,
-        fileId,
-        {
-          caption: captionWithFooter,
-          parse_mode: 'MarkdownV2',
-          disable_web_page_preview: true
-        }
-      );
-      return;
-    }
-
-    // 2) אם יש וידאו
-    if (msg.video) {
-      try { await ctx.telegram.deleteMessage(msg.chat.id, msg.message_id); } catch {}
-      await ctx.telegram.sendVideo(
-        TARGET_CHANNEL_ID,
-        msg.video.file_id,
-        {
-          caption: captionWithFooter,
-          parse_mode: 'MarkdownV2',
-          disable_web_page_preview: true
-        }
-      );
-      return;
-    }
-
-    // 3) אנימציה/מסמך — לפי צורך
-    if (msg.animation) {
-      try { await ctx.telegram.deleteMessage(msg.chat.id, msg.message_id); } catch {}
-      await ctx.telegram.sendAnimation(
-        TARGET_CHANNEL_ID,
-        msg.animation.file_id,
-        {
-          caption: captionWithFooter,
-          parse_mode: 'MarkdownV2',
-          disable_web_page_preview: true
-        }
-      );
-      return;
-    }
-
-    if (msg.document) {
-      try { await ctx.telegram.deleteMessage(msg.chat.id, msg.message_id); } catch {}
-      await ctx.telegram.sendDocument(
-        TARGET_CHANNEL_ID,
-        msg.document.file_id,
-        {
-          caption: captionWithFooter,
-          parse_mode: 'MarkdownV2',
-          disable_web_page_preview: true
-        }
-      );
-      return;
-    }
-
-    // 4) טקסט בלבד → עריכה במקום (צריך שהבוט יהיה מנהל עם Edit permissions), ואם אי אפשר — שולח הודעה חדשה עם הפוטר
-    try {
-      await ctx.telegram.editMessageText(
-        msg.chat.id,
-        msg.message_id,
-        undefined,
-        `${escapeMdV2(baseText)}${makeFooter()}`,
-        { parse_mode: 'MarkdownV2', disable_web_page_preview: true }
-      );
-    } catch {
-      await ctx.telegram.sendMessage(
-        TARGET_CHANNEL_ID,
-        `${escapeMdV2(baseText)}${makeFooter()}`,
-        { parse_mode: 'MarkdownV2', disable_web_page_preview: true }
-      );
-    }
-  } catch (err) {
-    // טיפול בשגיאות 429 עם לוגים נקיים
-    const e = (err && err.response) ? err.response : err;
-    console.error('handler error:', e?.error_code || '', e?.description || e?.message || e);
-  }
-});
-
-// הפעלה
-bot.launch()
-  .then(() => console.log('newsSIL boost bot started'))
-  .catch((e) => console.error('failed to launch bot', e));
-
-// עצירה עדינה (Railway)
+// Graceful stop (Railway)
 process.once('SIGINT',  () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
