@@ -1,4 +1,5 @@
-// src/index.js — Mode C (Smart) — Newssil v4.3-C
+// src/index.js — Newssil v4.3-C-stable (Smart Mode)
+// טקסט: עריכה במקום (Footer + SEO חבוי)  |  מדיה: מחיקה+העלאה מחדש עם ווטרמרק B
 import 'dotenv/config';
 import express from 'express';
 import bodyParser from 'body-parser';
@@ -9,19 +10,18 @@ import path from 'path';
 import { attachWeb } from './web.js';
 import { addWatermark } from './media.js';
 
-// ====== Required ENV ======
+// ========== ENV חובה ==========
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const SOURCE_CHANNEL_ID = process.env.SOURCE_CHANNEL_ID; // e.g., -1002111890470
+const SOURCE_CHANNEL_ID = process.env.SOURCE_CHANNEL_ID;   // לדוגמה: -1002111890470
 const ADMIN_ID = process.env.ADMIN_ID || '';
-
 if (!BOT_TOKEN || !SOURCE_CHANNEL_ID) {
   console.error('Missing env (BOT_TOKEN or SOURCE_CHANNEL_ID)');
   process.exit(1);
 }
 
-// ====== Config (optional) ======
+// ========== קונפיג (רשות) ==========
 let FOOTER = process.env.FOOTER_STYLE_A || 'חדשות ישראל IL — הצטרפו/תעקבו: X | פייסבוק | אינסטגרם | טיקטוק | וואצאפ';
-const SEO_ENABLED = (process.env.SEO_ENABLED || 'true') === 'true';
+let SEO_ENABLED = (process.env.SEO_ENABLED || 'true') === 'true';
 const KEYWORDS_PER_POST = Number(process.env.KEYWORDS_PER_POST || 20);
 const KEYWORDS_DIR = process.env.KEYWORDS_DIR || 'data/keywords_chunks';
 const FILTER_LEVEL = (process.env.CONTENT_FILTER_LEVEL || 'medium').toLowerCase();
@@ -34,10 +34,12 @@ const WM_CORNER = process.env.WM_CORNER || 'assets/watermark_corner.png';
 const WM_CENTER = process.env.WM_CENTER || 'assets/watermark_center.png';
 const WM_POS = process.env.WM_POS || 'top-right';
 
-const RETRY_MAX = Number(process.env.RETRY_MAX || 3);
+const RETRY_MAX = Number(process.env.RETRY_MAX || 10);
 const RETRY_BACKOFF_MS = Number(process.env.RETRY_BACKOFF_MS || 800);
 
-// ====== Helpers ======
+// ========== Utilities ==========
+const sleep = (ms)=> new Promise(r=>setTimeout(r, ms));
+
 function isServiceMessage(p) {
   return Boolean(
     p.pinned_message || p.new_chat_members || p.left_chat_member || p.new_chat_title ||
@@ -61,17 +63,21 @@ async function loadKeywords(n) {
   try {
     const files = (await fs.readdir(KEYWORDS_DIR)).filter(f => f.endsWith('.txt'));
     if (!files.length) return [];
-    const pick = files.includes('trends_live.txt') ? 'trends_live.txt' : files[Math.floor(Math.random()*files.length)];
-    const arr = (await fs.readFile(path.join(KEYWORDS_DIR, pick),'utf8')).split(/\r?\n/).filter(Boolean);
+    const pick = files.includes('trends_live.txt')
+      ? 'trends_live.txt'
+      : files[Math.floor(Math.random()*files.length)];
+    const arr = (await fs.readFile(path.join(KEYWORDS_DIR, pick),'utf8'))
+      .split(/\r?\n/).filter(Boolean);
     const out = [];
-    for (let i=0;i<n && arr.length;i++) out.push(arr[Math.floor(Math.random()*arr.length)]);
+    for (let i=0; i<n && arr.length; i++) out.push(arr[Math.floor(Math.random()*arr.length)]);
     return out;
   } catch { return []; }
 }
 const spoiler = s => (s ? `||${s}||` : '');
 function allowedIGTT(text='') {
   if (FILTER_LEVEL === 'low') return true;
-  const blocked = (fs.readFileSync('filters/blocked_words.txt','utf8')||'').split(/\r?\n/).filter(Boolean);
+  const blocked = (fs.readFileSync('filters/blocked_words.txt','utf8')||'')
+    .split(/\r?\n/).filter(Boolean);
   const t = (text||'').toLowerCase();
   return !blocked.some(w => w && t.includes(w));
 }
@@ -79,7 +85,8 @@ async function withRetry(name, fn) {
   let lastErr;
   for (let i=0;i<RETRY_MAX;i++) {
     try { return await fn(i); }
-    catch(e){ lastErr = e; console.error(`[retry:${name}] ${i+1}/${RETRY_MAX}:`, e.message); await new Promise(r=>setTimeout(r, RETRY_BACKOFF_MS*(i+1))); }
+    catch(e){ lastErr = e; console.error(`[retry:${name}] ${i+1}/${RETRY_MAX}:`, e.message);
+      await sleep(RETRY_BACKOFF_MS*(i+1)); }
   }
   throw lastErr;
 }
@@ -99,7 +106,7 @@ function buildCaption(base, kws){
   return parts.join('\n\n');
 }
 
-// ====== Auto-Clean (fix) ======
+// ========== Auto-Clean (תיקון/הקשחה) ==========
 function attachAutoClean(){
   if ((process.env.AUTO_CLEAN_ENABLED||'true')!=='true') return;
   const maxDays = Number(process.env.AUTO_CLEAN_MAX_DAYS||7);
@@ -121,13 +128,20 @@ function attachAutoClean(){
   }, 6*60*60*1000);
 }
 
-// ====== Seen (anti-duplicate) ======
+// ========== Seen (אנטי-כפילויות) עם הגנה על JSON ==========
 const seenPath = 'data/seen.json';
 await fs.ensureFile(seenPath);
-const seen = new Set(JSON.parse(await fs.readFile(seenPath, 'utf8') || '[]'));
+let seen;
+try {
+  const raw = await fs.readFile(seenPath,'utf8');
+  seen = new Set(JSON.parse(raw && raw.trim().length ? raw : '[]'));
+} catch {
+  await fs.writeFile(seenPath,'[]');  // תיקון קובץ שבור
+  seen = new Set();
+}
 async function persistSeen(){ await fs.writeFile(seenPath, JSON.stringify([...seen], null, 2)); }
 
-// ====== Web + Dashboard ======
+// ========== Web + Dashboard ==========
 const app = express();
 app.use(bodyParser.json());
 attachWeb(app);
@@ -135,7 +149,7 @@ const PORT = process.env.PORT || 8080;
 app.listen(PORT, ()=> console.log('Web + API up on', PORT));
 attachAutoClean();
 
-// ====== Telegram Bot ======
+// ========== Telegram Bot ==========
 const bot = new Telegraf(BOT_TOKEN);
 const isAdmin = (ctx) => ADMIN_ID && String(ctx.from?.id)===String(ADMIN_ID);
 
@@ -149,9 +163,11 @@ bot.hears(/^\/setfooter\s+(.+)/i, async (ctx)=>{ if(!isAdmin(ctx)) return;
   if(m){ FOOTER=m[1].trim(); await ctx.reply('Footer updated'); }
 });
 bot.hears(/^\/seo\s+(on|off)/i, async (ctx)=>{ if(!isAdmin(ctx)) return;
-  const on = /on/i.test(ctx.message.text); await ctx.reply(`SEO ${on?'ON':'OFF'}`);
+  SEO_ENABLED = /on/i.test(ctx.message.text);
+  await ctx.reply(`SEO ${SEO_ENABLED?'ON':'OFF'}`);
 });
 
+// helper להורדת קובץ מטלגרם
 async function tgDownload(file_id){
   const meta = await (await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${file_id}`)).json();
   if(!meta.ok) throw new Error('getFile failed');
@@ -160,24 +176,26 @@ async function tgDownload(file_id){
   return { buf: Buffer.from(arr), file_path: meta.result.file_path };
 }
 
-// ====== Core handler (Smart Mode) ======
+// ========== Core handler (Smart Mode) ==========
 bot.on('channel_post', async (ctx)=>{
   const post = ctx.update.channel_post;
-  // ignore old messages (> 30 min)
-if (Date.now()/1000 - post.date > 1800) return;
+
+  // התעלמות מהודעות ישנות (מעל 30 דק') — מונע מרדף על ההיסטוריה ו-429
+  if (!post) return;
+  if (Date.now()/1000 - post.date > 1800) return;
+
   try{
-    if (!post) return;
     if (isServiceMessage(post)) return;
 
     const key = `${post.chat.id}:${post.message_id}`;
-    if (seen.has(key)) return; // anti-duplicate
+    if (seen.has(key)) return;     // אנטי-כפילויות
     seen.add(key); await persistSeen();
 
     const baseText = post.text || post.caption || '';
     const kws = await loadKeywords(KEYWORDS_PER_POST);
     const caption = buildCaption(baseText, kws);
 
-    // Mirror (for SEO & dashboard)
+    // Mirror (SEO & dashboard)
     if (app.locals.webAppend) {
       await app.locals.webAppend({
         id:String(post.message_id),
@@ -198,8 +216,9 @@ if (Date.now()/1000 - post.date > 1800) return;
       assets:{}
     };
 
-    // === TEXT: edit in place ===
+    // === TEXT: עריכה במקום (עם האטה למניעת 429) ===
     if (post.text) {
+      await sleep(1100); // throttle
       await withRetry('tg.editText', ()=> ctx.telegram.editMessageText(
         post.chat.id, post.message_id, undefined, caption, { disable_web_page_preview:false }
       ));
@@ -213,7 +232,6 @@ if (Date.now()/1000 - post.date > 1800) return;
               post.video ? {type:'video', id:post.video.file_id} :
               post.animation ? {type:'animation', id:post.animation.file_id} :
               post.document ? {type:'document', id:post.document.file_id} : null;
-
     if (!m) return;
 
     const { buf, file_path } = await tgDownload(m.id);
@@ -225,10 +243,10 @@ if (Date.now()/1000 - post.date > 1800) return;
 
     let outPath = rawPath;
     if (WM_ENABLED) {
-      outPath = await addWatermark(rawPath, WM_CORNER, WM_CENTER, WM_POS); // Watermark B (corner + center)
+      outPath = await addWatermark(rawPath, WM_CORNER, WM_CENTER, WM_POS); // Watermark B
     }
 
-    // save static URL for Make
+    // Static URL for Make + דשבורד
     const fileBytes = await fs.readFile(outPath);
     const staticName = path.basename(outPath);
     await fs.ensureDir('web/static');
@@ -236,7 +254,7 @@ if (Date.now()/1000 - post.date > 1800) return;
     const relUrl = `/static/${staticName}`;
     payload.assets.processed_url = `${BASEURL}${relUrl}`;
 
-    // delete original quietly + repost
+    // מחיקת המקור בשקט + העלאה מחדש
     try { await withRetry('tg.delete', ()=> ctx.telegram.deleteMessage(post.chat.id, post.message_id)); } catch {}
     if (m.type==='photo') {
       await withRetry('tg.sendPhoto', ()=> ctx.telegram.sendPhoto(post.chat.id, { source: fs.createReadStream(outPath) }, { caption }));
@@ -249,7 +267,7 @@ if (Date.now()/1000 - post.date > 1800) return;
     }
 
     if (app.locals.logEvent) await app.locals.logEvent('post_media', { id:key, type:m.type });
-    await maybeWebhook(payload);                       // cross-post to Make
+    await maybeWebhook(payload);
     if (app.locals.logEvent) await app.locals.logEvent('crosspost', { id:key });
 
   }catch(e){
@@ -260,7 +278,7 @@ if (Date.now()/1000 - post.date > 1800) return;
 });
 
 bot.launch()
-  .then(()=> console.log('✅ v4.3-C started'))
+  .then(()=> console.log('✅ v4.3-C-stable started'))
   .catch(e=>{ console.error(e); process.exit(1); });
 
 process.once('SIGINT', ()=> bot.stop('SIGINT'));
