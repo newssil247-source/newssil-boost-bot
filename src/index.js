@@ -1,44 +1,62 @@
-// src/index.js — Newssil v4.3C (Smart, upload-then-delete, corner-only WM, silent SEO on Telegram)
+// Newssil Boost Bot — v4.4 Repost + Make
+// - Upload-then-Delete for all post types (no edits)
+// - Corner-only watermark (handled in media.js)
+// - Silent SEO on Telegram, keywords sent to Make
+// - Robust seen.json + retry + backoff
 import 'dotenv/config';
 import express from 'express';
 import bodyParser from 'body-parser';
-import { Telegraf } from 'telegraf';
 import fs from 'fs-extra';
-import fetch from 'node-fetch';
 import path from 'path';
-import { attachWeb } from './web.js';
-import { addWatermark } from './media.js';
+import fetch from 'node-fetch';
+import { Telegraf } from 'telegraf';
+import { addWatermark } from './media.js';   // חייב לתמוך: addWatermark(input, cornerPng, centerPng, pos)
+import { attachWeb } from './web.js';        // אופציונלי: דשבורד/סטטי
 
-// ===== Required ENV =====
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const SOURCE_CHANNEL_ID = process.env.SOURCE_CHANNEL_ID; // e.g. -1002111890470
-const ADMIN_ID = process.env.ADMIN_ID || '';
+// ---------- ENV ----------
+const BOT_TOKEN          = process.env.BOT_TOKEN;
+const SOURCE_CHANNEL_ID  = process.env.SOURCE_CHANNEL_ID;      // e.g. -1002111890470
+const ADMIN_ID           = process.env.ADMIN_ID || '';
+
+let   FOOTER             = process.env.FOOTER_STYLE_A ||
+  'חדשות ישראל IL — הצטרפו/תעקבו: https://x.com/newssil | https://www.facebook.com/share/173b9ycBuP/?mibextid=wwXIfr | https://www.instagram.com/newss_il?igsh=MXNtNjRjcWluc3pmdw%3D%3D&utm_source=qr | https://www.tiktok.com/@newss_il?_t=ZS-90sXDtL1OdD&_r=1 | https://whatsapp.com/channel/0029VaKyMK8ICVfrbqvQ6n0D';
+
+const SEO_ENABLED        = (process.env.SEO_ENABLED || 'true') === 'true';
+const SEO_TG_VISIBLE     = (process.env.SEO_TG_VISIBLE || 'false') === 'true'; // כברירת מחדל לא מציגים
+const KEYWORDS_PER_POST  = Number(process.env.KEYWORDS_PER_POST || 20);
+const KEYWORDS_DIR       = process.env.KEYWORDS_DIR || 'data/keywords_chunks';
+
+const WATERMARK_ENABLED  = (process.env.WATERMARK_ENABLED || 'true') === 'true';
+const WM_CORNER          = process.env.WM_CORNER || 'assets/watermark_corner.png';
+const WM_CENTER          = process.env.WM_CENTER || '';  // ריק => אין מרכז
+const WM_POS             = process.env.WM_POS || 'top-right';
+
+const MAKE_WEBHOOK_URL   = process.env.MAKE_WEBHOOK_URL || ''; // כתובת webhook של Make
+const WEB_BASEURL        = process.env.WEB_BASEURL || '';       // דומיין לקבצים סטטיים (אם יש)
+
+const RETRY_MAX          = Number(process.env.RETRY_MAX || 10);
+const RETRY_BACKOFF_MS   = Number(process.env.RETRY_BACKOFF_MS || 900);
+const IGNORE_OLDER_SEC   = Number(process.env.IGNORE_OLDER_SEC || 1800); // 30 דקות
+
 if (!BOT_TOKEN || !SOURCE_CHANNEL_ID) {
-  console.error('Missing env (BOT_TOKEN or SOURCE_CHANNEL_ID)');
-  process.exit(1);
+  console.error('❌ Missing BOT_TOKEN or SOURCE_CHANNEL_ID'); process.exit(1);
 }
 
-// ===== Config =====
-let FOOTER = process.env.FOOTER_STYLE_A || 'חדשות ישראל IL — הצטרפו/תעקבו: https://x.com/newssil | https://www.facebook.com/share/173b9ycBuP/?mibextid=wwXIfr | https://www.instagram.com/newss_il?igsh=MXNtNjRjcWluc3pmdw%3D%3D&utm_source=qr | https://www.tiktok.com/@newss_il?_t=ZS-90sXDtL1OdD&_r=1 | https://whatsapp.com/channel/0029VaKyMK8ICVfrbqvQ6n0D';
-const SEO_ENABLED = (process.env.SEO_ENABLED || 'true') === 'true';
-const SEO_TG_VISIBLE = (process.env.SEO_TG_VISIBLE || 'false') === 'true'; // בטלגרם לא מציגים מילות מפתח
-const KEYWORDS_PER_POST = Number(process.env.KEYWORDS_PER_POST || 20);
-const KEYWORDS_DIR = process.env.KEYWORDS_DIR || 'data/keywords_chunks';
-const FILTER_LEVEL = (process.env.CONTENT_FILTER_LEVEL || 'medium').toLowerCase();
-
-const MAKE_WEBHOOK_URL = process.env.MAKE_WEBHOOK_URL || '';
-const BASEURL = process.env.WEB_BASEURL || '';
-
-const WM_ENABLED = (process.env.WATERMARK_ENABLED || 'true') === 'true';
-const WM_CORNER = process.env.WM_CORNER || 'assets/watermark_corner.png';
-const WM_CENTER = process.env.WM_CENTER || ''; // ריק = אין מדבקה במרכז
-const WM_POS = process.env.WM_POS || 'top-right';
-
-const RETRY_MAX = Number(process.env.RETRY_MAX || 10);
-const RETRY_BACKOFF_MS = Number(process.env.RETRY_BACKOFF_MS || 800);
-
-// ===== Helpers =====
+// ---------- Helpers ----------
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+async function withRetry(name, fn) {
+  let last;
+  for (let i=0;i<RETRY_MAX;i++) {
+    try { return await fn(i); }
+    catch (e) {
+      last = e;
+      const ra = e?.parameters?.retry_after ? (e.parameters.retry_after*1000) : RETRY_BACKOFF_MS*(i+1);
+      console.error(`[retry:${name}] ${i+1}/${RETRY_MAX} -> ${e.message} (sleep ${ra}ms)`);
+      await sleep(ra);
+    }
+  }
+  throw last;
+}
 function isServiceMessage(p) {
   return Boolean(
     p.pinned_message || p.new_chat_members || p.left_chat_member || p.new_chat_title ||
@@ -62,10 +80,12 @@ async function loadKeywords(n) {
   try {
     const files = (await fs.readdir(KEYWORDS_DIR)).filter(f => f.endsWith('.txt'));
     if (!files.length) return [];
-    const pick = files.includes('trends_live.txt') ? 'trends_live.txt' : files[Math.floor(Math.random()*files.length)];
-    const arr = (await fs.readFile(path.join(KEYWORDS_DIR, pick),'utf8')).split(/\r?\n/).filter(Boolean);
-    const out = [];
-    for (let i=0;i<n && arr.length;i++) out.push(arr[Math.floor(Math.random()*arr.length)]);
+    const pick = files.includes('trends_live.txt')
+      ? 'trends_live.txt'
+      : files[Math.floor(Math.random()*files.length)];
+    const lines = (await fs.readFile(path.join(KEYWORDS_DIR,pick),'utf8'))
+                  .split(/\r?\n/).filter(Boolean);
+    const out=[]; for(let i=0;i<n && lines.length;i++) out.push(lines[Math.floor(Math.random()*lines.length)]);
     return out;
   } catch { return []; }
 }
@@ -73,215 +93,177 @@ const spoiler = s => (s ? `||${s}||` : '');
 function buildCaption(base, kws, { includeKeywords=false } = {}) {
   const parts = [];
   if (base) parts.push(base);
-  if (SEO_ENABLED && includeKeywords && kws?.length) parts.push(spoiler(kws.join(' · '))); // בטלגרם ברירת מחדל false
+  if (SEO_ENABLED && includeKeywords && kws?.length) parts.push(spoiler(kws.join(' · '))); // לא מוצג כברירת מחדל
   if (!onlyHashtags(base)) parts.push(FOOTER);
   return parts.join('\n\n');
 }
-function allowedIGTT(text='') {
-  if (FILTER_LEVEL === 'low') return true;
-  let blocked = [];
-  try { blocked = (fs.readFileSync('filters/blocked_words.txt','utf8')||'').split(/\r?\n/).filter(Boolean); } catch {}
-  const t = (text||'').toLowerCase();
-  return !blocked.some(w => w && t.includes(w));
-}
-async function withRetry(name, fn) {
-  let lastErr;
-  for (let i=0;i<RETRY_MAX;i++) {
-    try { return await fn(i); }
-    catch(e){ lastErr = e; console.error(`[retry:${name}] ${i+1}/${RETRY_MAX}:`, e.message); await sleep(RETRY_BACKOFF_MS*(i+1)); }
-  }
-  throw lastErr;
-}
-async function maybeWebhook(payload){
-  if (!MAKE_WEBHOOK_URL) return;
-  try {
-    await withRetry('make.webhook', ()=> fetch(MAKE_WEBHOOK_URL,{
-      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
-    }));
-  } catch(e){ console.error('MAKE error', e.message); }
-}
 
-// ===== Auto-Clean =====
-function attachAutoClean(){
-  if ((process.env.AUTO_CLEAN_ENABLED||'true')!=='true') return;
-  const maxDays = Number(process.env.AUTO_CLEAN_MAX_DAYS||7);
-  const ms = maxDays*24*60*60*1000;
-  const roots = ['web/static','web/processed'];
-  setInterval(async ()=>{
-    try{
-      const now = Date.now();
-      for(const root of roots){
-        if(!await fs.pathExists(root)) continue;
-        const files = await fs.readdir(root);
-        for(const f of files){
-          const p = path.join(root,f);
-          const st = await fs.stat(p);
-          if(now - st.mtimeMs > ms) await fs.remove(p);
-        }
-      }
-    }catch(e){ console.error('autoclean', e.message); }
-  }, 6*60*60*1000);
-}
-
-// ===== Seen (robust) =====
+// ---------- Seen store (robust) ----------
 const seenPath = 'data/seen.json';
 await fs.ensureDir('data');
-let _seenArr = [];
+let seenSet = new Set();
 try {
-  const raw = await fs.readFile(seenPath, 'utf8');
-  _seenArr = JSON.parse(raw || '[]');
-  if (!Array.isArray(_seenArr)) _seenArr = [];
+  const raw = await fs.readFile(seenPath,'utf8');
+  const arr = JSON.parse(raw || '[]');  // במקרה של [] פגום
+  if (Array.isArray(arr)) seenSet = new Set(arr);
+  else throw new Error('seen not array');
 } catch (e) {
-  console.warn('seen.json corrupted, resetting:', e.message);
-  _seenArr = [];
-  await fs.writeFile(seenPath, '[]');
+  console.warn('seen.json corrupted -> reset []', e.message);
+  await fs.writeFile(seenPath,'[]');
+  seenSet = new Set();
 }
-const seen = new Set(_seenArr);
-async function persistSeen(){ try{ await fs.writeFile(seenPath, JSON.stringify([...seen], null, 2)); }catch(e){ console.error('persistSeen failed:', e.message); }}
+async function persistSeen() {
+  try { await fs.writeFile(seenPath, JSON.stringify([...seenSet], null, 2)); }
+  catch (e) { console.error('persistSeen failed', e.message); }
+}
 
-// ===== Web + Dashboard =====
+// ---------- Web / dashboard (optional) ----------
 const app = express();
 app.use(bodyParser.json());
-attachWeb(app);
+attachWeb?.(app);
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, ()=> console.log('Web + API up on', PORT));
-attachAutoClean();
+app.listen(PORT, ()=> console.log('HTTP up on', PORT));
 
-// ===== Telegram Bot =====
+// ---------- Telegram ----------
 const bot = new Telegraf(BOT_TOKEN);
 const isAdmin = (ctx) => ADMIN_ID && String(ctx.from?.id)===String(ADMIN_ID);
 
 bot.command('status', async (ctx)=>{ if(!isAdmin(ctx)) return;
-  await ctx.reply(`OK
-SEO:${SEO_ENABLED}  KW:${KEYWORDS_PER_POST}  WM:${WM_ENABLED} pos:${WM_POS}  Filter:${FILTER_LEVEL}
-Footer: ${FOOTER.substring(0,120)}...`);
+  await ctx.reply(`✅ Running
+SEO:${SEO_ENABLED} (tgVisible=${SEO_TG_VISIBLE})  KW:${KEYWORDS_PER_POST}
+WM:${WATERMARK_ENABLED} pos:${WM_POS}
+Footer: ${FOOTER.slice(0,110)}...
+Make: ${MAKE_WEBHOOK_URL ? 'ON' : 'OFF'}`);
 });
 bot.hears(/^\/setfooter\s+(.+)/i, async (ctx)=>{ if(!isAdmin(ctx)) return;
   const m = ctx.message.text.match(/^\/setfooter\s+(.+)/i);
-  if(m){ FOOTER=m[1].trim(); await ctx.reply('Footer updated'); }
+  if (m) { FOOTER = m[1].trim(); await ctx.reply('Footer updated'); }
 });
 bot.hears(/^\/seo\s+(on|off)/i, async (ctx)=>{ if(!isAdmin(ctx)) return;
   const on = /on/i.test(ctx.message.text); await ctx.reply(`SEO ${on?'ON':'OFF'}`); });
 
-async function tgDownload(file_id){
-  const meta = await (await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${file_id}`)).json();
-  if(!meta.ok) throw new Error('getFile failed');
-  const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${meta.result.file_path}`;
-  const arr = await (await fetch(url)).arrayBuffer();
-  return { buf: Buffer.from(arr), file_path: meta.result.file_path };
+// file download
+async function tgDownload(file_id) {
+  const g = await (await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getFile?file_id=${file_id}`)).json();
+  if (!g.ok) throw new Error('getFile failed');
+  const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${g.result.file_path}`;
+  const buf = Buffer.from(await (await fetch(url)).arrayBuffer());
+  return { buf, file_path: g.result.file_path };
 }
 
-// ===== Core (Smart) =====
+// notify Make
+async function notifyMake(payload){
+  if (!MAKE_WEBHOOK_URL) return;
+  try {
+    await withRetry('make.webhook', ()=> fetch(MAKE_WEBHOOK_URL, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    }));
+  } catch(e){ console.error('MAKE error:', e.message); }
+}
+
+// ---------- Core handler ----------
 bot.on('channel_post', async (ctx)=>{
   const post = ctx.update.channel_post;
-  try{
-    if (!post) return;
-    if (isServiceMessage(post)) return;
+  try {
+    if (!post || isServiceMessage(post)) return;
 
-    // Ignore old messages (>30min) — למניעת מרדף על ההיסטוריה
-    if ((Date.now()/1000) - post.date > 1800) return;
+    // הימנעות מסריקות עבר
+    if ((Date.now()/1000) - post.date > IGNORE_OLDER_SEC) return;
 
     const key = `${post.chat.id}:${post.message_id}`;
-    if (seen.has(key)) return;
-    seen.add(key); await persistSeen();
+    if (seenSet.has(key)) return;
+    seenSet.add(key); await persistSeen();
 
     const baseText = post.text || post.caption || '';
     const kws = await loadKeywords(KEYWORDS_PER_POST);
-
-    // בטלגרם — לא מציגים מילות מפתח; כן שולחים ל-Make
     const caption = buildCaption(baseText, kws, { includeKeywords: SEO_TG_VISIBLE });
 
-    // לדשבורד/מראה
-    if (app.locals.webAppend) {
-      await app.locals.webAppend({
-        id:String(post.message_id),
-        title:(baseText||'').slice(0,80),
-        summary:(baseText||'').slice(0,400),
-        sourceUrl:`https://t.me/${String(SOURCE_CHANNEL_ID).replace('@','')}/${post.message_id}`,
-        ts:Date.now()
-      });
-    }
-
+    // הכנה ל-Make
     const payload = {
-      platform:'telegram',
-      postId:key,
+      platform: 'telegram',
+      postId: key,
+      chatId: post.chat.id,
+      messageId: post.message_id,
       text: baseText,
-      keywords: kws,                     // → Make ישתמש ב-ALT/Metadata
       footerApplied: !onlyHashtags(baseText),
-      seoHidden: SEO_ENABLED,
-      allowIGTikTok: allowedIGTT(baseText),
-      assets:{}
+      keywords: kws,                 // Make ישתמש ל-ALT/Metadata
+      assets: {}
     };
 
-    // ===== TEXT → עריכה במקום (עם האטה למניעת 429) =====
+    // ----- TEXT: שלח חדש → מחק ישן -----
     if (post.text) {
-      await sleep(900);
-      await withRetry('tg.editText', ()=> ctx.telegram.editMessageText(
-        post.chat.id, post.message_id, undefined, caption, { disable_web_page_preview:false }
-      ));
-      if (app.locals.logEvent) await app.locals.logEvent('post_text', { id:key });
-      await maybeWebhook(payload);
+      const sent = await withRetry('tg.sendMessage', () =>
+        ctx.telegram.sendMessage(post.chat.id, caption, { disable_web_page_preview: false })
+      );
+      if (sent?.message_id) {
+        try { await withRetry('tg.delete', () => ctx.telegram.deleteMessage(post.chat.id, post.message_id)); } catch {}
+      }
+      await notifyMake(payload);
       return;
     }
 
-    // ===== MEDIA → הורדה → ווטרמרק פינה בלבד → שליחה → ואז מחיקה =====
-    const m = post.photo ? {type:'photo', id:post.photo[post.photo.length-1].file_id} :
-              post.video ? {type:'video', id:post.video.file_id} :
-              post.animation ? {type:'animation', id:post.animation.file_id} :
-              post.document ? {type:'document', id:post.document.file_id} : null;
-    if (!m) return;
+    // ----- MEDIA: הורדה → ווטרמרק פינה → שליחה → ואז מחיקה -----
+    const media =
+      post.photo     ? { type:'photo',     id: post.photo[post.photo.length-1].file_id } :
+      post.video     ? { type:'video',     id: post.video.file_id } :
+      post.animation ? { type:'animation', id: post.animation.file_id } :
+      post.document  ? { type:'document',  id: post.document.file_id } : null;
 
-    const { buf, file_path } = await tgDownload(m.id);
-    const ext = (file_path.split('.').pop()||'mp4').toLowerCase();
+    if (!media) return;
+
+    const { buf, file_path } = await tgDownload(media.id);
+    const ext = (file_path.split('.').pop() || 'mp4').toLowerCase();
     const rawName = `${post.message_id}.${ext}`;
     const rawPath = path.join('web','processed', rawName);
     await fs.ensureDir(path.dirname(rawPath));
     await fs.writeFile(rawPath, buf);
 
-    // Watermark: רק פינה (אם WM_CENTER ריק, addWatermark יוסיף רק corner)
     let outPath = rawPath;
-    if (WM_ENABLED) {
-      outPath = await addWatermark(rawPath, WM_CORNER, WM_CENTER, WM_POS);
+    if (WATERMARK_ENABLED) {
+      outPath = await addWatermark(rawPath, WM_CORNER, WM_CENTER, WM_POS); // אם WM_CENTER ריק—רק פינה
     }
 
-    // קישור סטטי עבור Make
-    const fileBytes = await fs.readFile(outPath);
-    const staticName = path.basename(outPath);
+    // קובץ סטטי ל-Make (אם WEB_BASEURL קיים)
     await fs.ensureDir('web/static');
-    await fs.writeFile(path.join('web','static', staticName), fileBytes);
-    payload.assets.processed_url = `${BASEURL}/static/${staticName}`;
+    const staticName = path.basename(outPath);
+    const staticPath = path.join('web','static', staticName);
+    await fs.copy(outPath, staticPath);
+    if (WEB_BASEURL) payload.assets.processed_url = `${WEB_BASEURL}/static/${staticName}`;
 
-    // 1) שליחת הגרסה החדשה
+    // שליחה לפי סוג
     let sent;
-    if (m.type==='photo') {
-      sent = await withRetry('tg.sendPhoto', ()=> ctx.telegram.sendPhoto(post.chat.id, { source: fs.createReadStream(outPath) }, { caption }));
-    } else if (m.type==='video') {
-      sent = await withRetry('tg.sendVideo', ()=> ctx.telegram.sendVideo(post.chat.id, { source: fs.createReadStream(outPath) }, { caption }));
-    } else if (m.type==='animation') {
-      sent = await withRetry('tg.sendAnimation', ()=> ctx.telegram.sendAnimation(post.chat.id, { source: fs.createReadStream(outPath) }, { caption }));
-    } else if (m.type==='document') {
-      sent = await withRetry('tg.sendDocument', ()=> ctx.telegram.sendDocument(post.chat.id, { source: fs.createReadStream(outPath) }, { caption }));
+    if (media.type==='photo') {
+      sent = await withRetry('tg.sendPhoto', () =>
+        ctx.telegram.sendPhoto(post.chat.id, { source: fs.createReadStream(outPath) }, { caption })
+      );
+    } else if (media.type==='video') {
+      sent = await withRetry('tg.sendVideo', () =>
+        ctx.telegram.sendVideo(post.chat.id, { source: fs.createReadStream(outPath) }, { caption })
+      );
+    } else if (media.type==='animation') {
+      sent = await withRetry('tg.sendAnimation', () =>
+        ctx.telegram.sendAnimation(post.chat.id, { source: fs.createReadStream(outPath) }, { caption })
+      );
+    } else {
+      sent = await withRetry('tg.sendDocument', () =>
+        ctx.telegram.sendDocument(post.chat.id, { source: fs.createReadStream(outPath) }, { caption })
+      );
     }
 
-    // 2) רק אם הצליחה השליחה — מוחקים את המקור
     if (sent?.message_id) {
-      try { await withRetry('tg.delete', ()=> ctx.telegram.deleteMessage(post.chat.id, post.message_id)); } catch {}
+      try { await withRetry('tg.delete', () => ctx.telegram.deleteMessage(post.chat.id, post.message_id)); } catch {}
     }
 
-    if (app.locals.logEvent) await app.locals.logEvent('post_media', { id:key, type:m.type });
-    await maybeWebhook(payload);
-    if (app.locals.logEvent) await app.locals.logEvent('crosspost', { id:key });
-
-  }catch(e){
-    console.error('handler error', e);
-    try { if(ADMIN_ID) await ctx.telegram.sendMessage(ADMIN_ID, '❌ '+e.message); } catch {}
-    if (app.locals.logEvent) await app.locals.logEvent('error', { message: e.message });
+    await notifyMake(payload);
+  } catch (e) {
+    console.error('handler error:', e);
+    try { if (ADMIN_ID) await ctx.telegram.sendMessage(ADMIN_ID, '❌ ' + e.message); } catch {}
   }
 });
 
 bot.launch()
-  .then(()=> console.log('✅ v4.3C started'))
-  .catch(e=>{ console.error(e); process.exit(1); });
+  .then(()=> console.log('✅ Bot up (v4.4)'))
+  .catch(e => { console.error(e); process.exit(1); });
 
-process.once('SIGINT', ()=> bot.stop('SIGINT'));
-process.once('SIGTERM', ()=> bot.stop('SIGTERM'));
+process.once('SIGINT',  () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
