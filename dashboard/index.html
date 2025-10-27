@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NEWSSIL Dashboard</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;background:#0b0f14;color:#e9eef5}
+  header{padding:16px 24px;background:#121821;position:sticky;top:0;border-bottom:1px solid #222b36}
+  h1{margin:0;font-size:20px}
+  .wrap{max-width:1100px;margin:0 auto;padding:24px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
+  .card{background:#131a23;border:1px solid #223042;border-radius:12px;padding:16px}
+  .card h3{margin:0 0 8px 0;font-size:14px;color:#9fb3c8}
+  .big{font-size:28px;font-weight:700;color:#fff}
+  canvas{width:100%;height:220px;background:#0f141b;border-radius:8px;border:1px solid #1d2733}
+  .muted{color:#9fb3c8}
+  footer{padding:16px;text-align:center;color:#6b7b8e}
+</style>
+</head>
+<body>
+<header><h1>NEWSSIL — לוח בקרה</h1></header>
+<div class="wrap">
+  <section class="cards" id="summary">
+    <div class="card"><h3>פוסטים היום</h3><div class="big" id="posts">—</div><div class="muted" id="postsBreak">טקסט: — · מדיה: —</div></div>
+    <div class="card"><h3>הפצות (Make)</h3><div class="big" id="crosspost">—</div></div>
+    <div class="card"><h3>שגיאות</h3><div class="big" id="errors">—</div></div>
+  </section>
+
+  <section style="margin-top:24px" class="card">
+    <h3>7 ימים אחרונים</h3>
+    <canvas id="chart"></canvas>
+  </section>
+</div>
+<footer>© NEWSSIL</footer>
+
+<script>
+async function fetchMetrics(){
+  const res = await fetch('/api/metrics'); const j = await res.json();
+  return j.data || {};
+}
+function drawChart(canvas, series){
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width = canvas.clientWidth, H = canvas.height = 220;
+  ctx.clearRect(0,0,W,H);
+  const days = Object.keys(series).sort();
+  const max = Math.max(1, ...days.map(d=>series[d].posts||0));
+  const px = (i)=> 30 + (W-60) * (i/(Math.max(1,days.length-1)));
+  const py = (v)=> H-30 - (H-60) * (v/max);
+  ctx.strokeStyle='#2b8cff'; ctx.lineWidth=2; ctx.beginPath();
+  days.forEach((d,i)=>{ const v = series[d].posts||0; const x=px(i), y=py(v); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+  ctx.stroke();
+  ctx.fillStyle='#9fb3c8'; ctx.font='12px system-ui';
+  days.forEach((d,i)=>{ const v=series[d].posts||0; const x=px(i), y=py(v); ctx.fillRect(x-2,y-2,4,4); ctx.fillText(d.slice(5), x-12, H-10); });
+}
+(async()=>{
+  const data = await fetchMetrics();
+  const days = data.days || {};
+  const today = new Date().toISOString().slice(0,10);
+  const todayRow = days[today] || {posts:0,media:0,text:0,crosspost:0,errors:0};
+  document.getElementById('posts').textContent = todayRow.posts;
+  document.getElementById('postsBreak').textContent = `טקסט: ${todayRow.text} · מדיה: ${todayRow.media}`;
+  document.getElementById('crosspost').textContent = todayRow.crosspost;
+  document.getElementById('errors').textContent = todayRow.errors;
+  drawChart(document.getElementById('chart'), days);
+})();
+</script>
+</body>
+</html>
