@@ -163,6 +163,8 @@ async function tgDownload(file_id){
 // ====== Core handler (Smart Mode) ======
 bot.on('channel_post', async (ctx)=>{
   const post = ctx.update.channel_post;
+  // ignore old messages (> 30 min)
+if (Date.now()/1000 - post.date > 1800) return;
   try{
     if (!post) return;
     if (isServiceMessage(post)) return;
