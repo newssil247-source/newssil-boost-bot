@@ -1,20 +1,14 @@
 {
   "name": "newsil-boost-bot",
-  "version": "4.2.0",
+  "version": "5.5.0",
   "type": "module",
-  "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "NODE_ENV=development node src/index.js"
-  },
-  "engines": {
-    "node": ">=18.18"
+    "start": "node src/index.js"
   },
   "dependencies": {
+    "telegraf": "^4.16.3",
     "axios": "^1.7.7",
     "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "sharp": "^0.33.5",
-    "telegraf": "^4.16.3"
+    "sharp": "^0.33.4"
   }
 }
