@@ -19,11 +19,9 @@ const ADMIN_ID          = need('ADMIN_ID');
 // ───────── Flags & Options ─────────
 const IGNORE_BOT_MESSAGES = String(process.env.IGNORE_BOT_MESSAGES || 'true') === 'true';
 
-const FOOTER_ONELINE      = process.env.FOOTER_ONELINE || חדשות ישראל IL — הצטרפו/תעקבו כעת
-X | פייסבוק | וואטסאפ | אינסטגרם | טיקטוק
-';
-const FOOTER_VISIBLE_TG   = String(process.env.FOOTER_VISIBLE_TG || 'true') === 'true';
-const FOOTER_LINKED       = String(process.env.FOOTER_LINKED || 'true') === 'true';
+const FOOTER_ONELINE    = process.env.FOOTER_ONELINE || 'חדשות ישראל IL - תעקבו אחרינו';
+const FOOTER_VISIBLE_TG = String(process.env.FOOTER_VISIBLE_TG || 'true') === 'true';
+const FOOTER_LINKED     = String(process.env.FOOTER_LINKED || 'true') === 'true';
 const DISABLE_WEB_PREVIEW = String(process.env.DISABLE_WEB_PREVIEW || 'true') === 'true';
 
 const LINK_X  = need('LINK_X');
@@ -31,6 +29,16 @@ const LINK_FB = need('LINK_FB');
 const LINK_WA = need('LINK_WA');
 const LINK_IG = need('LINK_IG');
 const LINK_TT = need('LINK_TT');
+
+function buildFooterHTML() {
+  if (!FOOTER_VISIBLE_TG) return '';
+  return `${FOOTER_ONELINE}\n` +
+    `<a href="${LINK_X}">X</a> | ` +
+    `<a href="${LINK_FB}">Facebook</a> | ` +
+    `<a href="${LINK_WA}">WhatsApp</a> | ` +
+    `<a href="${LINK_IG}">Instagram</a> | ` +
+    `<a href="${LINK_TT}">TikTok</a>`;
+}
 
 // Watermark (תמיד בצד ימין כברירת־מחדל)
 const WM_ENABLE    = String(process.env.WM_ENABLE || 'true') === 'true';
@@ -124,14 +132,15 @@ async function saveMapping(key, newMessageId) {
 // Footer (HTML לחיץ)
 function buildFooterHTML() {
   if (!FOOTER_VISIBLE_TG) return '';
-  
-  return `${FOOTER_ONELINE}\n` +
+
+  return `חדשות ישראל IL - תעקבו אחרינו\n` +
     `<a href="${LINK_X}">X</a> | ` +
-    `<a href="${LINK_FB}">פייסבוק</a> | ` +
-    `<a href="${LINK_WA}">וואטסאפ</a> | ` +
-    `<a href="${LINK_IG}">אינסטגרם</a> | ` +
-    `<a href="${LINK_TT}">טיקטוק</a>`;
+    `<a href="${LINK_FB}">Facebook</a> | ` +
+    `<a href="${LINK_WA}">WhatsApp</a> | ` +
+    `<a href="${LINK_IG}">Instagram</a> | ` +
+    `<a href="${LINK_TT}">TikTok</a>`;
 }
+
 function addFooterToText(text) {
   const clean = (text || '').trim();
   const ft = buildFooterHTML();
