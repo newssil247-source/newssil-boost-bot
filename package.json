@@ -1,10 +1,6 @@
 {
-  "name": "newsil-boost-bot",
-  "version": "5.5.0",
   "type": "module",
-  "scripts": {
-    "start": "node src/index.js"
-  },
+  "scripts": { "start": "node src/index.js" },
   "dependencies": {
     "telegraf": "^4.16.3",
     "axios": "^1.7.7",
