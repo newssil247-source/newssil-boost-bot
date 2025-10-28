@@ -19,7 +19,9 @@ const ADMIN_ID          = need('ADMIN_ID');
 // ───────── Flags & Options ─────────
 const IGNORE_BOT_MESSAGES = String(process.env.IGNORE_BOT_MESSAGES || 'true') === 'true';
 
-const FOOTER_ONELINE      = process.env.FOOTER_ONELINE || 'חדשות ישראל IL — הצטרפו/תעקבו כעת';
+const FOOTER_ONELINE      = process.env.FOOTER_ONELINE || חדשות ישראל IL — הצטרפו/תעקבו כעת
+X | פייסבוק | וואטסאפ | אינסטגרם | טיקטוק
+';
 const FOOTER_VISIBLE_TG   = String(process.env.FOOTER_VISIBLE_TG || 'true') === 'true';
 const FOOTER_LINKED       = String(process.env.FOOTER_LINKED || 'true') === 'true';
 const DISABLE_WEB_PREVIEW = String(process.env.DISABLE_WEB_PREVIEW || 'true') === 'true';
@@ -122,10 +124,13 @@ async function saveMapping(key, newMessageId) {
 // Footer (HTML לחיץ)
 function buildFooterHTML() {
   if (!FOOTER_VISIBLE_TG) return '';
-  const links = FOOTER_LINKED
-    ? `<a href="${LINK_X}">X</a> | <a href="${LINK_FB}">פייסבוק</a> | <a href="${LINK_WA}">וואטסאפ</a> | <a href="${LINK_IG}">אינסטגרם</a> | <a href="${LINK_TT}">טיקטוק</a>`
-    : `X | פייסבוק | וואטסאפ | אינסטגרם | טיקטוק`;
-  return `${FOOTER_ONELINE}:\n${links}`;
+  
+  return `${FOOTER_ONELINE}\n` +
+    `<a href="${LINK_X}">X</a> | ` +
+    `<a href="${LINK_FB}">פייסבוק</a> | ` +
+    `<a href="${LINK_WA}">וואטסאפ</a> | ` +
+    `<a href="${LINK_IG}">אינסטגרם</a> | ` +
+    `<a href="${LINK_TT}">טיקטוק</a>`;
 }
 function addFooterToText(text) {
   const clean = (text || '').trim();
