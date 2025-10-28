@@ -1,7 +1,13 @@
-# Newssil Boost Bot — v4.1 (Full + Dashboard)
-- Telegram: edit text in place; media gets watermark (delete+repost quietly).
-- Cross-post via Make (`processed_url` watermarked asset).
-- Compact footer as last visible line; hidden SEO before it.
-- Web service: mirror + static + sitemap + API.
-- Dashboard: /dashboard (charts), /api/metrics (JSON), /api/events (log).
-- Admin: /status, /setfooter, /seo on|off, /wm on|off.
+# NewsSIL Boost Bot (Railway, v4.2b)
+
+Mirrors posts from a Telegram source channel to a target channel, adds clickable footer, applies watermark (image/video), supports delete+repost strategy, optional SEO ingest + GA tracking, optional fan-out to Make (X/FB/IG/TT), and a minimal dashboard.
+
+## Quick Start
+1) Copy `.env.example` → fill values (or paste into Railway Raw Editor).
+2) Ensure the bot is **Admin** on both SOURCE & TARGET (with Delete Messages on target).
+3) Deploy on Railway. Logs should show: `newsSIL boost bot started`.
+
+## Endpoints
+- `/dashboard?token=...` — mini dashboard
+- `/api/status` — health
+- `/api/stats` — seen/map counts
