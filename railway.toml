@@ -1,9 +1,13 @@
+# Railway config for NewsSIL In-Place Editor (Node + ffmpeg)
 [build]
 builder = "NIXPACKS"
 
 [env]
+NODE_ENV = "production"
+# מתקין ffmpeg בשלב הבילד/ריצה
 NIXPACKS_PKGS = "ffmpeg"
 
 [deploy]
 startCommand = "node src/index.js"
 restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
