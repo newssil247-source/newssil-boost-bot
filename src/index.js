@@ -1,6 +1,6 @@
 // ========= NewsSIL Boost Bot =========
 // Version: v6.3 – WM top-right • Edit-in-place (fallback) • Albums no-gap • Compressed video • Footer A • Make fanout
-// Patched: stable dedup + atomic seen store
+// Patched: stable per-message dedup + atomic seen store + proper album-level dedup
 
 import 'dotenv/config.js';
 import { Telegraf } from 'telegraf';
@@ -10,7 +10,7 @@ import axios from 'axios';
 import { spawn } from 'child_process';
 import path from 'path';
 import ffmpegPath from 'ffmpeg-static';
-import crypto from 'crypto'; // ← חדש
+import crypto from 'crypto';
 
 // ======== ENV helpers ========
 const need = (k) => { const v = process.env[k]; if (!v || String(v).trim()==='') throw new Error(`Missing env ${k}`); return v; };
@@ -57,12 +57,11 @@ if (!fssync.existsSync(SEEN_FILE)) fssync.writeFileSync(SEEN_FILE, '[]');
 const bot = new Telegraf(BOT_TOKEN);
 
 // ======== Utils (dedup) =========
+// מזהה יציב לפר הודעה; לא משתמשים ב-media_group_id כדי לא לחסום פריטי אלבום
 function messageFingerprint(msg) {
-  // אלבום שלם
-  if (msg.media_group_id) {
-    return `g:${msg.chat?.id}:${msg.media_group_id}`;
+  if (msg?.message_id && msg?.chat?.id) {
+    return `m:${msg.chat.id}:${msg.message_id}`;
   }
-  // קובץ מדיה יחיד: מזהה ייחודי של טלגרם, הכי יציב
   const fileUid =
     msg.photo?.[msg.photo.length - 1]?.file_unique_id ||
     msg.video?.file_unique_id ||
@@ -70,12 +69,10 @@ function messageFingerprint(msg) {
     msg.animation?.file_unique_id ||
     msg.audio?.file_unique_id;
 
-  if (fileUid) {
-    return `f:${msg.chat?.id}:${fileUid}`;
-  }
-  // טקסט/כיתוב: hash של chat+תוכן+מועד יצירה
+  if (fileUid) return `f:${msg.chat?.id}:${fileUid}`;
+
   const baseText = (msg.caption || msg.text || '').trim();
-  const created  = msg.date || 0; // שניות יוניקס מטלגרם
+  const created  = msg.date || 0; // יוניקס שניות
   const h = crypto.createHash('sha1')
                   .update(`${msg.chat?.id}|${baseText}|${created}`)
                   .digest('hex')
@@ -223,24 +220,18 @@ bot.on('channel_post', async ctx => {
   if (!msg?.chat?.id) return;
   if (String(msg.chat.id) !== String(SOURCE_CHANNEL_ID)) return;
 
-  // היה: `${msg.chat.id}:${msg.message_id}`
-  const key = messageFingerprint(msg);
-  if (!await seenPush(key)) return; // אין כפילויות
-
-  const baseText = msg.caption || msg.text || '';
-  const addFooter = FOOTER_VISIBLE_TG && !(SKIP_FOOTER_IF_HASHTAG && hasHashtag(baseText));
-  const footer = addFooter ? `\n\n${buildFooter()}` : '';
-  const caption = `${baseText}${footer}`.trim();
-
-  // אלבום?
+  // אלבום? לא עושים דה-דופליקציה כאן, רק אוספים ורצים בטיימר עם key קבוצתי
   if (GROUP_COMBINE_ENABLE && msg.media_group_id) {
     const gid = msg.media_group_id;
     if (!groups.has(gid)) groups.set(gid, { items: [], chatId: msg.chat.id, timer: null });
     const g = groups.get(gid);
-    g.items.push({ msg, baseText });
+    g.items.push({ msg, baseText: msg.caption || msg.text || '' });
 
     if (g.timer) clearTimeout(g.timer);
     g.timer = setTimeout(async () => {
+      const groupKey = `group:${g.chatId}:${gid}`;
+      if (!await seenPush(groupKey)) { groups.delete(gid); return; }
+
       try { await handleAlbum(ctx.telegram, g.items, g.chatId); }
       catch (e){ console.warn('album error:', e?.message || e); }
       finally { groups.delete(gid); }
@@ -248,7 +239,16 @@ bot.on('channel_post', async ctx => {
     return;
   }
 
-  // לא אלבום → טקסט בלבד או מדיה בודדת
+  // לא אלבום → דה-דופליקציה פר הודעה
+  const key = messageFingerprint(msg);
+  if (!await seenPush(key)) return;
+
+  const baseText = msg.caption || msg.text || '';
+  const addFooter = FOOTER_VISIBLE_TG && !(SKIP_FOOTER_IF_HASHTAG && hasHashtag(baseText));
+  const footer = addFooter ? `\n\n${buildFooter()}` : '';
+  const caption = `${baseText}${footer}`.trim();
+
+  // טקסט בלבד או מדיה בודדת
   const media = detectMedia(msg);
   if (!media) {
     // טקסט בלבד → עריכה במקום
@@ -382,7 +382,7 @@ bot.command('ping', (ctx) => ctx.reply('pong'));
 
 // ======== Launch ========
 bot.launch();
-console.log('NewsSIL Boost Bot v6.3 started (patched dedup)');
+console.log('NewsSIL Boost Bot v6.3 started (patched per-message & album dedup)');
 
 // Graceful stop (Railway)
 process.once('SIGINT', () => bot.stop('SIGINT'));
