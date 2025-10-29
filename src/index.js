@@ -1,5 +1,5 @@
 // ========= NewsSIL Boost Bot =========
-// Version: v6.2 – WM top-right • Albums • Compressed video • Footer A • Make fanout
+// Version: v6.3 – WM top-right • Edit-in-place (fallback) • Albums no-gap • Compressed video • Footer A • Make fanout
 
 import 'dotenv/config.js';
 import { Telegraf } from 'telegraf';
@@ -16,14 +16,14 @@ const bool = (v, d='true') => String(v ?? d) === 'true';
 const num  = (v, d) => Number(v ?? d);
 
 // ======== Telegram / Behavior ========
-const BOT_TOKEN            = need('BOT_TOKEN');
-const SOURCE_CHANNEL_ID    = need('SOURCE_CHANNEL_ID'); // ערוץ המקור (ועליו עובדים)
-const DISABLE_WEB_PREVIEW  = bool(process.env.DISABLE_WEB_PREVIEW, 'true');
+const BOT_TOKEN             = need('BOT_TOKEN');
+const SOURCE_CHANNEL_ID     = need('SOURCE_CHANNEL_ID'); // ערוץ המקור (ועליו עובדים)
+const DISABLE_WEB_PREVIEW   = bool(process.env.DISABLE_WEB_PREVIEW, 'true');
 
 // ======== Footer =========
-const FOOTER_VISIBLE_TG    = bool(process.env.FOOTER_VISIBLE_TG, 'true');
-const FOOTER_LINKED        = bool(process.env.FOOTER_LINKED, 'true');
-const SKIP_FOOTER_IF_HASHTAG = bool(process.env.SKIP_FOOTER_IF_HASHTAG, 'true');
+const FOOTER_VISIBLE_TG     = bool(process.env.FOOTER_VISIBLE_TG, 'true');
+const FOOTER_LINKED         = bool(process.env.FOOTER_LINKED, 'true');
+const SKIP_FOOTER_IF_HASHTAG= bool(process.env.SKIP_FOOTER_IF_HASHTAG, 'true');
 
 const LINK_X  = need('LINK_X');
 const LINK_FB = need('LINK_FB');
@@ -43,7 +43,7 @@ const GROUP_COMBINE_ENABLE = bool(process.env.GROUP_COMBINE_ENABLE, 'true');
 const GROUP_BUFFER_MS      = num(process.env.GROUP_BUFFER_MS, 1200);
 
 // ======== Make (optional) =========
-const MAKE_WEBHOOK_URL    = process.env.MAKE_WEBHOOK_URL || '';
+const MAKE_WEBHOOK_URL     = process.env.MAKE_WEBHOOK_URL || '';
 
 // ======== Seen store =========
 const SEEN_FILE = 'data/seen.json';
@@ -66,7 +66,6 @@ function hasHashtag(s=''){ return /(^|\s)#\w+/u.test(String(s)); }
 
 function buildFooter() {
   if (!FOOTER_VISIBLE_TG) return '';
-  if (SKIP_FOOTER_IF_HASHTAG && hasHashtag) { /* בדיקה בטקסט תיעשה נקודתית בעת שימוש */ }
   const header = 'חדשות ישראל IL — עקבו אחרינו:';
   const links = FOOTER_LINKED
     ? `<a href="${LINK_X}">X</a> | <a href="${LINK_FB}">Facebook</a> | <a href="${LINK_WA}">WhatsApp</a> | <a href="${LINK_IG}">Instagram</a> | <a href="${LINK_TT}">TikTok</a>`
@@ -75,7 +74,7 @@ function buildFooter() {
 }
 
 function wmOverlayExpr() {
-  // כרגע תומכים top-right בלבד כפי שביקשת; ניתן להרחיב בהמשך
+  // כרגע תומכים top-right בלבד (ניתן להרחבה)
   return `W-w-${WM_MARGIN}:${WM_MARGIN}`;
 }
 
@@ -108,7 +107,7 @@ async function watermarkImage(input, output) {
 
   await img
     .composite([{ input: wm, left: (width - wmW - WM_MARGIN), top: WM_MARGIN }])
-    .jpeg({ quality: 85 }) // דחיסה מחמירה אך איכותית
+    .jpeg({ quality: 85 })
     .toFile(output);
 
   return output;
@@ -124,30 +123,23 @@ async function watermarkVideo(input, output) {
       '-y',
       '-i', input,
       '-i', WM_IMAGE,
-
-      // פילטרים: הורדה עד 720p, לוגו בפינה, פורמט תואם
       '-filter_complex',
       `[1][0]scale2ref=w=iw*${WM_WIDTH_PCT/100}:h=ow/mdar[wm][vid];[vid]${vfScale}[v1];[v1][wm]overlay=${overlay}`,
-
-      // קידוד דחוס אך חד ובר-נגן
       '-c:v', 'libx264',
       '-profile:v', 'high',
       '-preset', 'veryfast',
-      '-crf', '27',          // דחיסה מחמירה
+      '-crf', '27',
       '-maxrate', '3M',
       '-bufsize', '6M',
       '-pix_fmt', 'yuv420p',
-
       '-c:a', 'aac',
       '-b:a', '128k',
-
       '-movflags', '+faststart',
       output
     ];
 
     const ff = spawn(ffmpegPath, args);
     ff.on('error', rej);
-    ff.stderr.on('data', d => { /* אפשר להדפיס ללוג אם רוצים */ });
     ff.on('close', c => c === 0 ? res() : rej(new Error('ffmpeg exit ' + c)));
   });
 }
@@ -187,7 +179,7 @@ bot.on('channel_post', async ctx => {
     const gid = msg.media_group_id;
     if (!groups.has(gid)) groups.set(gid, { items: [], chatId: msg.chat.id, timer: null });
     const g = groups.get(gid);
-    g.items.push({ msg, baseText }); // נשמור טקסט המקור לכל פריט; הפוטר יתווסף רק לראשון
+    g.items.push({ msg, baseText });
 
     if (g.timer) clearTimeout(g.timer);
     g.timer = setTimeout(async () => {
@@ -209,19 +201,16 @@ bot.on('channel_post', async ctx => {
       });
       fanoutToMake({ type: 'text_edit', chat_id: msg.chat.id, message_id: msg.message_id, text: caption });
     } catch (e) {
-      // אם אין שינוי/אין הרשאה—נתעלם בשקט
       console.warn('edit text error:', e?.description || e?.message || e);
     }
     return;
   }
 
-  // מדיה בודדת → מוחק ומעלה מחדש מיידית עם WM+פוטר
+  // מדיה בודדת → מכין WM/קובץ ואז מנסה עריכה "בפנים", אחרת מחיקה+שליחה מיידית
   await handleSingleMedia(ctx.telegram, msg, media, caption);
 });
 
 async function handleSingleMedia(tg, msg, media, caption) {
-  try { await tg.deleteMessage(msg.chat.id, msg.message_id); } catch {}
-
   await fs.mkdir('tmp', { recursive: true });
   const base = `${msg.chat.id}_${msg.message_id}_${Date.now()}`;
   const inFile  = `tmp/${base}${media.ext}`;
@@ -229,41 +218,53 @@ async function handleSingleMedia(tg, msg, media, caption) {
 
   await downloadFile(tg, media.fileId, inFile);
 
-  let toSend = inFile;
+  let editedFile = inFile;
   try {
     if (WM_ENABLE) {
       if (media.kind === 'video') await watermarkVideo(inFile, outFile);
       else await watermarkImage(inFile, outFile);
-      toSend = outFile;
+      editedFile = outFile;
     }
   } catch (e) {
     console.warn('WM failed (single):', e?.message || e);
   }
 
-  if (media.kind === 'video') {
-    await tg.sendVideo(msg.chat.id, { source: toSend }, {
-      caption, parse_mode: 'HTML', disable_web_page_preview: DISABLE_WEB_PREVIEW
-    });
-  } else {
-    await tg.sendPhoto(msg.chat.id, { source: toSend }, {
-      caption, parse_mode: 'HTML', disable_web_page_preview: DISABLE_WEB_PREVIEW
-    });
+  // נסיון ראשון: edit "בפנים" (ללא מחיקה)
+  try {
+    await tg.editMessageMedia(
+      msg.chat.id,
+      msg.message_id,
+      undefined,
+      media.kind === 'video'
+        ? { type: 'video', media: { source: editedFile }, caption, parse_mode: 'HTML' }
+        : { type: 'photo', media: { source: editedFile },  caption, parse_mode: 'HTML' },
+      { disable_web_page_preview: DISABLE_WEB_PREVIEW }
+    );
+    fanoutToMake({ type: 'media_single_edit', chat_id: msg.chat.id, message_id: msg.message_id });
+  } catch (e) {
+    // פולבק: מחיקה+שליחה חדשה באופן מיידי (אין חלון ריק — הכל מוכן מראש)
+    try { await tg.deleteMessage(msg.chat.id, msg.message_id); } catch {}
+    if (media.kind === 'video') {
+      await tg.sendVideo(msg.chat.id, { source: editedFile }, {
+        caption, parse_mode: 'HTML', disable_web_page_preview: DISABLE_WEB_PREVIEW
+      });
+    } else {
+      await tg.sendPhoto(msg.chat.id, { source: editedFile }, {
+        caption, parse_mode: 'HTML', disable_web_page_preview: DISABLE_WEB_PREVIEW
+      });
+    }
+    fanoutToMake({ type: 'media_single_repost', chat_id: msg.chat.id });
   }
-
-  // fanout
-  fanoutToMake({ type: 'media_single', chat_id: msg.chat.id, caption });
 
   await fs.rm(inFile, { force: true });
   await fs.rm(outFile, { force: true });
 }
 
 async function handleAlbum(tg, items, chatId) {
-  // מחיקה של כל הודעות המקור
-  for (const it of items) { try { await tg.deleteMessage(chatId, it.msg.message_id); } catch {} }
-
+  // 1) מכין את כל הקבצים (WM) מראש
   await fs.mkdir('tmp', { recursive: true });
+  const prepared = [];
 
-  const mediaInputs = [];
   for (let i = 0; i < items.length; i++) {
     const { msg, baseText } = items[i];
     const m = detectMedia(msg);
@@ -275,44 +276,45 @@ async function handleAlbum(tg, items, chatId) {
 
     await downloadFile(tg, m.fileId, inFile);
 
-    let toSend = inFile;
+    let sendFile = inFile;
     try {
       if (WM_ENABLE) {
         if (m.kind === 'video') await watermarkVideo(inFile, outFile);
         else await watermarkImage(inFile, outFile);
-        toSend = outFile;
+        sendFile = outFile;
       }
     } catch (e) {
       console.warn('WM failed (album item):', e?.message || e);
     }
 
-    // פוטר יתווסף רק לראשון
     const addFooter = FOOTER_VISIBLE_TG && !(SKIP_FOOTER_IF_HASHTAG && hasHashtag(baseText));
     const cap = (i === 0) ? `${baseText}${addFooter ? '\n\n'+buildFooter() : ''}`.trim() : undefined;
 
-    if (m.kind === 'video') {
-      mediaInputs.push({ type: 'video', media: { source: toSend }, caption: cap, parse_mode: 'HTML' });
-    } else {
-      mediaInputs.push({ type: 'photo', media: { source: toSend }, caption: cap, parse_mode: 'HTML' });
-    }
+    prepared.push(
+      m.kind === 'video'
+        ? { type: 'video', media: { source: sendFile }, caption: cap, parse_mode: 'HTML' }
+        : { type: 'photo', media: { source: sendFile }, caption: cap, parse_mode: 'HTML' }
+    );
   }
 
-  if (mediaInputs.length) {
-    await tg.sendMediaGroup(chatId, mediaInputs, { disable_web_page_preview: DISABLE_WEB_PREVIEW });
-    fanoutToMake({ type: 'media_group', chat_id: chatId, count: mediaInputs.length });
-  }
+  if (!prepared.length) return;
 
-  // ניקוי tmp
+  // 2) מוחק את הודעות האלבום הישנות
+  for (const it of items) { try { await tg.deleteMessage(chatId, it.msg.message_id); } catch {} }
+
+  // 3) שולח את האלבום כמקשה אחת
+  await tg.sendMediaGroup(chatId, prepared, { disable_web_page_preview: DISABLE_WEB_PREVIEW });
+  fanoutToMake({ type: 'media_group', chat_id: chatId, count: prepared.length });
+
+  // 4) ניקוי tmp
   try {
     for (const f of await fs.readdir('tmp')) {
-      if (f.endsWith('.wm.mp4') || f.endsWith('.wm.jpg') || f.endsWith('.mp4') || f.endsWith('.jpg')) {
-        await fs.rm(`tmp/${f}`, { force: true });
-      }
+      if (/\.(wm\.mp4|wm\.jpg|mp4|jpg)$/i.test(f)) await fs.rm(`tmp/${f}`, { force: true });
     }
   } catch {}
 }
 
-// ======== Admin commands (אופציונלי לבדיקה) ========
+// ======== Admin commands ========
 bot.command('status', async (ctx) => {
   const txt = `רץ 🟢\nערוץ מקור: ${SOURCE_CHANNEL_ID}\nFanout: ${MAKE_WEBHOOK_URL ? 'ON' : 'OFF'}`;
   try { await ctx.reply(txt); } catch {}
@@ -322,7 +324,7 @@ bot.command('ping', (ctx) => ctx.reply('pong'));
 
 // ======== Launch ========
 bot.launch();
-console.log('NewsSIL Boost Bot v6.2 started');
+console.log('NewsSIL Boost Bot v6.3 started');
 
 // Graceful stop (Railway)
 process.once('SIGINT', () => bot.stop('SIGINT'));
