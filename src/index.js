@@ -1,5 +1,6 @@
 // ========= NewsSIL Boost Bot =========
 // Version: v6.3 – WM top-right • Edit-in-place (fallback) • Albums no-gap • Compressed video • Footer A • Make fanout
+// Patched: stable dedup + atomic seen store
 
 import 'dotenv/config.js';
 import { Telegraf } from 'telegraf';
@@ -9,6 +10,7 @@ import axios from 'axios';
 import { spawn } from 'child_process';
 import path from 'path';
 import ffmpegPath from 'ffmpeg-static';
+import crypto from 'crypto'; // ← חדש
 
 // ======== ENV helpers ========
 const need = (k) => { const v = process.env[k]; if (!v || String(v).trim()==='') throw new Error(`Missing env ${k}`); return v; };
@@ -46,20 +48,75 @@ const GROUP_BUFFER_MS      = num(process.env.GROUP_BUFFER_MS, 1200);
 const MAKE_WEBHOOK_URL     = process.env.MAKE_WEBHOOK_URL || '';
 
 // ======== Seen store =========
-const SEEN_FILE = 'data/seen.json';
+const SEEN_FILE = process.env.SEEN_FILE || 'data/seen.json';
+const SEEN_LOCK = process.env.SEEN_LOCK || 'data/seen.lock';
 if (!fssync.existsSync('data')) fssync.mkdirSync('data', { recursive: true });
 if (!fssync.existsSync(SEEN_FILE)) fssync.writeFileSync(SEEN_FILE, '[]');
 
 // ======== Bot =========
 const bot = new Telegraf(BOT_TOKEN);
 
-// ======== Utils =========
-async function seenPush(key) {
-  const arr = JSON.parse(await fs.readFile(SEEN_FILE, 'utf8'));
-  if (arr.includes(key)) return false;
-  arr.push(key);
-  await fs.writeFile(SEEN_FILE, JSON.stringify(arr.slice(-4000)));
-  return true;
+// ======== Utils (dedup) =========
+function messageFingerprint(msg) {
+  // אלבום שלם
+  if (msg.media_group_id) {
+    return `g:${msg.chat?.id}:${msg.media_group_id}`;
+  }
+  // קובץ מדיה יחיד: מזהה ייחודי של טלגרם, הכי יציב
+  const fileUid =
+    msg.photo?.[msg.photo.length - 1]?.file_unique_id ||
+    msg.video?.file_unique_id ||
+    msg.document?.file_unique_id ||
+    msg.animation?.file_unique_id ||
+    msg.audio?.file_unique_id;
+
+  if (fileUid) {
+    return `f:${msg.chat?.id}:${fileUid}`;
+  }
+  // טקסט/כיתוב: hash של chat+תוכן+מועד יצירה
+  const baseText = (msg.caption || msg.text || '').trim();
+  const created  = msg.date || 0; // שניות יוניקס מטלגרם
+  const h = crypto.createHash('sha1')
+                  .update(`${msg.chat?.id}|${baseText}|${created}`)
+                  .digest('hex')
+                  .slice(0, 16);
+  return `t:${msg.chat?.id}:${h}`;
+}
+
+// "נעילה" פשטנית על קובץ כדי למנוע מרוץ בין אינסטנסים
+async function acquireSeenLock(retries = 60, delayMs = 25) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const fd = fssync.openSync(SEEN_LOCK, 'wx'); // ייכשל אם קיים
+      return fd;
+    } catch {
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+  throw new Error('seen lock timeout');
+}
+
+async function seenPush(key, keep = 4000) {
+  let lockFd;
+  try {
+    lockFd = await acquireSeenLock();
+    let arr = [];
+    try {
+      const raw = await fs.readFile(SEEN_FILE, 'utf8');
+      arr = JSON.parse(raw || '[]');
+    } catch { arr = []; }
+
+    if (arr.includes(key)) return false;
+    arr.push(key);
+    if (arr.length > keep) arr = arr.slice(-keep);
+    await fs.writeFile(SEEN_FILE, JSON.stringify(arr));
+    return true;
+  } finally {
+    if (lockFd != null) {
+      try { fssync.closeSync(lockFd); } catch {}
+      try { fssync.unlinkSync(SEEN_LOCK); } catch {}
+    }
+  }
 }
 
 function hasHashtag(s=''){ return /(^|\s)#\w+/u.test(String(s)); }
@@ -166,7 +223,8 @@ bot.on('channel_post', async ctx => {
   if (!msg?.chat?.id) return;
   if (String(msg.chat.id) !== String(SOURCE_CHANNEL_ID)) return;
 
-  const key = `${msg.chat.id}:${msg.message_id}`;
+  // היה: `${msg.chat.id}:${msg.message_id}`
+  const key = messageFingerprint(msg);
   if (!await seenPush(key)) return; // אין כפילויות
 
   const baseText = msg.caption || msg.text || '';
@@ -324,7 +382,7 @@ bot.command('ping', (ctx) => ctx.reply('pong'));
 
 // ======== Launch ========
 bot.launch();
-console.log('NewsSIL Boost Bot v6.3 started');
+console.log('NewsSIL Boost Bot v6.3 started (patched dedup)');
 
 // Graceful stop (Railway)
 process.once('SIGINT', () => bot.stop('SIGINT'));
